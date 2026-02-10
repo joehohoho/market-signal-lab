@@ -699,8 +699,10 @@ def create_app() -> FastAPI:
         # Find where simulation period starts (after warmup).
         # Use midnight on the creation date so daily candles (timestamped at
         # midnight) aren't skipped because of the intra-day creation time.
+        # Default to len(df) so NO simulation runs if no bar falls on/after
+        # the creation date (e.g. created on weekend, after market close).
         created_date = pd.Timestamp(created_at.date())
-        sim_start_idx = 0
+        sim_start_idx = len(df)
         for idx_i in range(len(df)):
             if df.iloc[idx_i]["timestamp"] >= created_date:
                 sim_start_idx = idx_i
@@ -734,12 +736,15 @@ def create_app() -> FastAPI:
             equity_values.append(equity)
             equity_dates.append(row["timestamp"])
 
-        # Equity chart
-        equity_series = pd.Series(
-            equity_values, index=pd.to_datetime(equity_dates),
-        )
-        equity_chart = _build_equity_chart(equity_series)
-        equity_chart_json = json.dumps(equity_chart)
+        # Equity chart (may be empty if no bars since creation)
+        if equity_values:
+            equity_series = pd.Series(
+                equity_values, index=pd.to_datetime(equity_dates),
+            )
+            equity_chart = _build_equity_chart(equity_series)
+            equity_chart_json = json.dumps(equity_chart)
+        else:
+            equity_chart_json = "null"
 
         # Portfolio summary
         current_price = float(df["close"].iloc[-1])
