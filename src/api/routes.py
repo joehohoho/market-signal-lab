@@ -28,7 +28,6 @@ from backtest.optimizer import ParameterOptimizer
 from data.providers.yfinance_provider import YFinanceProvider
 from data.storage.parquet_store import ParquetStore
 from indicators.core import ema, sma
-from paper.simulator import PaperTradingSimulator
 from screener.scanner import Screener
 from signals.engine import SignalEngine
 from strategies import STRATEGY_REGISTRY, get_strategy
@@ -524,16 +523,15 @@ def create_app() -> FastAPI:
         capital: float = Form(default=10000.0),
         fee_preset: str = Form(default="crypto_major"),
     ):
-        """Run a paper trading simulation with live market data."""
-        # Fetch all available history up to right now
+        """Analyse current market and show what the strategy recommends now."""
+        # Fetch enough recent data for indicators to warm up (~200 bars)
         end_dt = datetime.now(tz=timezone.utc)
-        start_dt = end_dt - pd.Timedelta(days=3650)  # up to 10 years
+        lookback = 400 if timeframe == "1d" else 800  # days
+        start_dt = end_dt - pd.Timedelta(days=lookback)
 
-        # Fetch live data from yfinance
         try:
             provider = YFinanceProvider()
             df = provider.fetch_ohlcv(asset, timeframe, start_dt, end_dt)
-            # Normalise to tz-naive UTC (consistent with rest of app)
             if not df.empty and df["timestamp"].dt.tz is not None:
                 df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
         except Exception as exc:
@@ -573,7 +571,7 @@ def create_app() -> FastAPI:
         if optimized is not None:
             params = {**params, **optimized}
 
-        # Compute signals for all bars (including warmup)
+        # Compute signals across all bars
         prepared = df.set_index("timestamp") if "timestamp" in df.columns else df.copy()
         if not isinstance(prepared.index, pd.DatetimeIndex):
             prepared.index = pd.to_datetime(prepared.index)
@@ -589,90 +587,76 @@ def create_app() -> FastAPI:
                 "result": None,
             })
 
-        # Run paper trading simulation across all bars
-        sim = PaperTradingSimulator(
-            initial_capital=capital,
-            fee_preset=fee_preset,
-            position_size_pct=1.0,
-        )
-
-        equity_values: list[float] = []
-        equity_dates: list[Any] = []
-
-        for i in range(len(df)):
-            row = df.iloc[i]
-            candle = {
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "volume": float(row.get("volume", 0)),
-                "timestamp": str(row["timestamp"]),
-            }
-
-            step_signals: dict[str, Any] = {}
-            if i < len(all_signals):
-                step_signals = {asset: all_signals[i]}
-
-            sim.step(candle, step_signals)
-
-            equity = sim.get_portfolio_value({asset: float(row["close"])})
-            equity_values.append(equity)
-            equity_dates.append(row["timestamp"])
-
-        # Build equity curve chart
-        equity_series = pd.Series(equity_values, index=pd.to_datetime(equity_dates))
-        equity_chart = _build_equity_chart(equity_series)
-        equity_chart_json = json.dumps(equity_chart)
-
-        # Portfolio summary
-        final_equity = equity_values[-1] if equity_values else capital
-        total_pnl = final_equity - capital
-        total_pnl_pct = (total_pnl / capital) * 100 if capital > 0 else 0.0
+        # Current market state
+        current_price = float(df["close"].iloc[-1])
+        prev_price = float(df["close"].iloc[-2]) if len(df) > 1 else current_price
+        price_change = current_price - prev_price
+        price_change_pct = (price_change / prev_price) * 100 if prev_price else 0.0
+        data_timestamp = str(df["timestamp"].iloc[-1])
 
         # Current signal
         current_signal_str = "HOLD"
         current_strength = 0.0
+        current_explanation = ""
         if all_signals:
             last_sig = all_signals[-1]
             current_signal_str = last_sig.signal.value
             current_strength = last_sig.strength
+            current_explanation = last_sig.explanation or ""
 
-        # Format completed trades
-        trades = sim.get_trade_ledger()
-        formatted_trades = []
-        for t in trades:
-            formatted_trades.append({
-                "entry_time": _format_timestamp(str(t.get("entry_time", ""))),
-                "exit_time": _format_timestamp(str(t.get("timestamp", ""))),
-                "entry_price": f"${t.get('entry_price', 0):.4f}",
-                "exit_price": f"${t.get('exit_price', 0):.4f}",
-                "pnl": f"${t.get('pnl', 0):.2f}",
-                "pnl_pct": f"{t.get('pnl_pct', 0) * 100:.2f}%",
-                "pnl_positive": t.get("pnl", 0) > 0,
+        # Compute fee impact for recommended trade
+        from paper.simulator import _load_fee_preset, _effective_buy_price, _effective_sell_price
+
+        fees = _load_fee_preset(fee_preset)
+
+        # Recommended action based on current signal
+        action = None
+        if current_signal_str == "BUY":
+            buy_price = _effective_buy_price(current_price, fees)
+            shares = capital / buy_price
+            total_cost = shares * buy_price
+            action = {
+                "type": "BUY",
+                "shares": f"{shares:.6f}",
+                "price": _format_price(buy_price),
+                "total": f"${total_cost:,.2f}",
+                "note": f"Buy {shares:.6f} {asset} at {_format_price(buy_price)} (incl. fees/slippage)",
+            }
+        elif current_signal_str == "SELL":
+            sell_price = _effective_sell_price(current_price, fees)
+            shares = capital / current_price  # what you could hold
+            proceeds = shares * sell_price
+            action = {
+                "type": "SELL",
+                "shares": f"{shares:.6f}",
+                "price": _format_price(sell_price),
+                "total": f"${proceeds:,.2f}",
+                "note": f"Sell at {_format_price(sell_price)} (after fees/slippage)",
+            }
+        else:
+            action = {
+                "type": "HOLD",
+                "note": "Strategy says wait — no trade recommended right now.",
+            }
+
+        # Recent signal history (last 15 bars with non-HOLD signals highlighted)
+        recent_signals = []
+        start_idx = max(0, len(all_signals) - 15)
+        for i in range(start_idx, len(all_signals)):
+            sig = all_signals[i]
+            bar_ts = str(df.iloc[i]["timestamp"]) if i < len(df) else ""
+            bar_close = float(df.iloc[i]["close"]) if i < len(df) else 0
+            recent_signals.append({
+                "date": _format_timestamp(bar_ts),
+                "signal": sig.signal.value,
+                "strength": f"{sig.strength:.2f}",
+                "price": _format_price(bar_close),
             })
 
-        # Format open positions
-        positions = sim.get_positions()
-        current_price = float(df["close"].iloc[-1])
-        formatted_positions = []
-        for pos_asset, pos_data in positions.items():
-            unrealized_pnl = (current_price - pos_data["entry_price"]) * pos_data["shares"]
-            unrealized_pct = (
-                ((current_price / pos_data["entry_price"]) - 1.0) * 100
-                if pos_data["entry_price"] > 0
-                else 0.0
-            )
-            formatted_positions.append({
-                "asset": pos_asset,
-                "shares": f"{pos_data['shares']:.6f}",
-                "entry_price": f"${pos_data['entry_price']:.4f}",
-                "current_price": _format_price(current_price),
-                "unrealized_pnl": f"${unrealized_pnl:.2f}",
-                "unrealized_pct": f"{unrealized_pct:.2f}%",
-                "pnl_positive": unrealized_pnl >= 0,
-                "entry_time": _format_timestamp(str(pos_data.get("entry_time", ""))),
-            })
+        # Build price chart for recent period (last 60 bars)
+        chart_df = df.tail(60).copy()
+        price_chart = _build_candlestick_chart(chart_df, asset, sma_periods=[20, 50])
+        price_chart_json = json.dumps(price_chart)
 
         return templates.TemplateResponse("simulate.html", {
             "request": request,
@@ -684,20 +668,19 @@ def create_app() -> FastAPI:
                 "strategy": strategy,
                 "timeframe": timeframe,
                 "fee_preset": fee_preset,
-                "initial_capital": f"${capital:,.2f}",
-                "initial_capital_raw": capital,
-                "final_equity": f"${final_equity:,.2f}",
-                "total_pnl": f"${total_pnl:,.2f}",
-                "total_pnl_pct": f"{total_pnl_pct:.2f}%",
-                "total_trades": len(trades),
-                "total_bars": len(df),
-                "data_as_of": _format_timestamp(str(df["timestamp"].iloc[-1])),
+                "capital_raw": capital,
+                "capital": f"${capital:,.2f}",
+                "current_price": _format_price(current_price),
+                "price_change": f"${price_change:+,.2f}",
+                "price_change_pct": f"{price_change_pct:+.2f}%",
+                "price_up": price_change >= 0,
+                "data_as_of": _format_timestamp(data_timestamp),
                 "current_signal": current_signal_str,
                 "current_strength": f"{current_strength:.2f}",
-                "equity_chart_json": equity_chart_json,
-                "trades": formatted_trades,
-                "positions": formatted_positions,
-                "pnl_positive": total_pnl >= 0,
+                "explanation": current_explanation,
+                "action": action,
+                "recent_signals": recent_signals,
+                "price_chart_json": price_chart_json,
             },
         })
 

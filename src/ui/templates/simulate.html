@@ -6,9 +6,9 @@
 
 {% block content %}
 <div class="fade-in">
-    <h1 class="text-2xl font-bold text-slate-100 mb-6">Paper Trading Simulation</h1>
+    <h1 class="text-2xl font-bold text-slate-100 mb-6">Live Strategy Monitor</h1>
 
-    <!-- Simulation Form -->
+    <!-- Form -->
     <div class="bg-slate-800 rounded-lg border border-slate-700 p-6 mb-6">
         <form action="/simulate" method="post"
               hx-post="/simulate"
@@ -45,17 +45,9 @@
                 </select>
             </div>
             <div>
-                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">
-                    Starting Capital
-                    <span class="group/tip relative inline-block cursor-help ml-1">
-                        <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-slate-600 text-[10px] text-slate-400">?</span>
-                        <span class="invisible group-hover/tip:visible absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 text-xs text-slate-200 bg-slate-900 rounded shadow-lg w-48 text-center normal-case z-10">
-                            The amount of virtual money to start the simulation with.
-                        </span>
-                    </span>
-                </label>
+                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Capital</label>
                 <input type="number" name="capital" placeholder="10000" required
-                       value="{{ result.initial_capital_raw if result else '10000' }}"
+                       value="{{ result.capital_raw if result else '10000' }}"
                        min="100" step="100"
                        class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500 placeholder-slate-500">
             </div>
@@ -64,7 +56,7 @@
                 <select name="timeframe"
                         class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500">
                     <option value="1d" {% if result and result.timeframe == '1d' %}selected{% endif %}>1 Day</option>
-                    <option value="15m" {% if result and result.timeframe == '15m' %}selected{% endif %}>15 Min</option>
+                    <option value="1wk" {% if result and result.timeframe == '1wk' %}selected{% endif %}>1 Week</option>
                 </select>
             </div>
             <div>
@@ -78,13 +70,13 @@
                     {% endfor %}
                 </select>
             </div>
-            <div class="md:col-span-3 flex items-center space-x-4">
+            <div class="flex items-end">
                 <button type="submit"
                         class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-6 py-2 rounded transition-colors">
-                    Run Simulation
+                    Analyse
                 </button>
-                <span id="loading-indicator" class="htmx-indicator text-sm text-slate-400">
-                    Running simulation...
+                <span id="loading-indicator" class="htmx-indicator text-sm text-slate-400 ml-3">
+                    Fetching live data...
                 </span>
             </div>
         </form>
@@ -101,121 +93,132 @@
     <div id="simulate-results">
         {% if result %}
         <div class="space-y-6 fade-in">
-            <!-- Current Signal -->
-            <div class="bg-slate-800 rounded-lg border border-slate-700 p-6">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Current Signal</h2>
-                    <span class="text-xs text-slate-500">Live data as of {{ result.data_as_of }}</span>
+
+            <!-- Current Market + Signal -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Market Price -->
+                <div class="bg-slate-800 rounded-lg border border-slate-700 p-6">
+                    <div class="flex items-center justify-between mb-2">
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">{{ result.asset }}</h2>
+                        <span class="text-xs text-slate-500">as of {{ result.data_as_of }}</span>
+                    </div>
+                    <div class="flex items-baseline space-x-3">
+                        <span class="text-3xl font-bold font-mono text-slate-100">{{ result.current_price }}</span>
+                        <span class="text-lg font-mono
+                            {% if result.price_up %}text-green-400{% else %}text-red-400{% endif %}">
+                            {{ result.price_change }} ({{ result.price_change_pct }})
+                        </span>
+                    </div>
                 </div>
-                <div class="flex items-center space-x-4">
-                    <span class="text-3xl font-bold font-mono
-                        {% if result.current_signal == 'BUY' %}text-green-400
-                        {% elif result.current_signal == 'SELL' %}text-red-400
-                        {% else %}text-slate-400{% endif %}">
-                        {{ result.current_signal }}
-                    </span>
-                    <span class="text-sm text-slate-400">
-                        Strength: <span class="font-mono text-slate-200">{{ result.current_strength }}</span>
-                    </span>
-                    <span class="text-sm text-slate-500">
-                        ({{ result.strategy|replace('_', ' ')|title }} on {{ result.asset }} / {{ result.timeframe }})
-                    </span>
+
+                <!-- Current Signal -->
+                <div class="bg-slate-800 rounded-lg border border-slate-700 p-6">
+                    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-2">
+                        {{ result.strategy|replace('_', ' ')|title }} Signal
+                    </h2>
+                    <div class="flex items-baseline space-x-3">
+                        <span class="text-3xl font-bold font-mono
+                            {% if result.current_signal == 'BUY' %}text-green-400
+                            {% elif result.current_signal == 'SELL' %}text-red-400
+                            {% else %}text-slate-400{% endif %}">
+                            {{ result.current_signal }}
+                        </span>
+                        <span class="text-sm text-slate-400">
+                            Strength: <span class="font-mono text-slate-200">{{ result.current_strength }}</span>
+                        </span>
+                    </div>
+                    {% if result.explanation %}
+                    <p class="text-xs text-slate-400 mt-2">{{ result.explanation }}</p>
+                    {% endif %}
                 </div>
             </div>
 
-            <!-- Portfolio Summary -->
-            <div class="bg-slate-800 rounded-lg border border-slate-700 p-6">
-                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Portfolio Summary</h2>
-                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <div class="bg-slate-700/50 rounded p-3">
-                        <p class="text-xs text-slate-400 uppercase">Starting Capital</p>
-                        <p class="text-lg font-mono font-bold text-slate-200">{{ result.initial_capital }}</p>
+            <!-- Recommended Action -->
+            <div class="rounded-lg border p-6
+                {% if result.action.type == 'BUY' %}bg-green-900/20 border-green-700
+                {% elif result.action.type == 'SELL' %}bg-red-900/20 border-red-700
+                {% else %}bg-slate-800 border-slate-700{% endif %}">
+                <h2 class="text-sm font-semibold uppercase tracking-wider mb-3
+                    {% if result.action.type == 'BUY' %}text-green-300
+                    {% elif result.action.type == 'SELL' %}text-red-300
+                    {% else %}text-slate-300{% endif %}">
+                    Recommended Action with {{ result.capital }}
+                </h2>
+                <p class="text-lg font-medium
+                    {% if result.action.type == 'BUY' %}text-green-200
+                    {% elif result.action.type == 'SELL' %}text-red-200
+                    {% else %}text-slate-200{% endif %}">
+                    {{ result.action.note }}
+                </p>
+                {% if result.action.type in ['BUY', 'SELL'] %}
+                <div class="flex space-x-6 mt-3 text-sm">
+                    <div>
+                        <span class="text-slate-400">Units:</span>
+                        <span class="font-mono text-slate-200 ml-1">{{ result.action.shares }}</span>
                     </div>
-                    <div class="bg-slate-700/50 rounded p-3">
-                        <p class="text-xs text-slate-400 uppercase">Final Value</p>
-                        <p class="text-lg font-mono font-bold text-slate-200">{{ result.final_equity }}</p>
+                    <div>
+                        <span class="text-slate-400">Fill Price:</span>
+                        <span class="font-mono text-slate-200 ml-1">{{ result.action.price }}</span>
                     </div>
-                    <div class="bg-slate-700/50 rounded p-3">
-                        <p class="text-xs text-slate-400 uppercase">Total P&L</p>
-                        <p class="text-lg font-mono font-bold
-                            {% if result.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
-                            {{ result.total_pnl }}
-                        </p>
-                    </div>
-                    <div class="bg-slate-700/50 rounded p-3">
-                        <p class="text-xs text-slate-400 uppercase">P&L %</p>
-                        <p class="text-lg font-mono font-bold
-                            {% if result.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
-                            {{ result.total_pnl_pct }}
-                        </p>
-                    </div>
-                    <div class="bg-slate-700/50 rounded p-3">
-                        <p class="text-xs text-slate-400 uppercase">Trades</p>
-                        <p class="text-lg font-mono font-bold text-slate-200">{{ result.total_trades }}</p>
-                    </div>
-                    <div class="bg-slate-700/50 rounded p-3">
-                        <p class="text-xs text-slate-400 uppercase">Bars</p>
-                        <p class="text-lg font-mono font-bold text-slate-200">{{ result.total_bars }}</p>
+                    <div>
+                        <span class="text-slate-400">Total:</span>
+                        <span class="font-mono text-slate-200 ml-1">{{ result.action.total }}</span>
                     </div>
                 </div>
+                {% endif %}
             </div>
 
-            <!-- Equity Curve -->
+            <!-- Price Chart -->
             <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
-                <div id="equity-chart" class="w-full" style="height: 350px;"></div>
+                <div id="price-chart" class="w-full" style="height: 400px;"></div>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
-                        renderChart('equity-chart', {{ result.equity_chart_json|safe }});
+                        renderChart('price-chart', {{ result.price_chart_json|safe }});
                     });
                     document.addEventListener('htmx:afterSwap', function() {
-                        var el = document.getElementById('equity-chart');
+                        var el = document.getElementById('price-chart');
                         if (el) {
                             try {
-                                var data = {{ result.equity_chart_json|safe }};
-                                renderChart('equity-chart', data);
+                                var data = {{ result.price_chart_json|safe }};
+                                renderChart('price-chart', data);
                             } catch(e) {}
                         }
                     });
                 </script>
             </div>
 
-            <!-- Open Positions -->
-            {% if result.positions %}
+            <!-- Recent Signal History -->
+            {% if result.recent_signals %}
             <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
                 <div class="px-4 py-3 border-b border-slate-700">
                     <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">
-                        Open Positions ({{ result.positions|length }})
+                        Recent Signal History
                     </h2>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full">
                         <thead>
                             <tr class="bg-slate-700/30 text-xs text-slate-400 uppercase tracking-wider">
-                                <th class="px-3 py-2 font-medium">Asset</th>
-                                <th class="px-3 py-2 font-medium">Shares</th>
-                                <th class="px-3 py-2 font-medium">Entry Price</th>
-                                <th class="px-3 py-2 font-medium">Current Price</th>
-                                <th class="px-3 py-2 font-medium">Unrealized P&L</th>
-                                <th class="px-3 py-2 font-medium">P&L %</th>
-                                <th class="px-3 py-2 font-medium">Entry Time</th>
+                                <th class="px-3 py-2 font-medium">Date</th>
+                                <th class="px-3 py-2 font-medium">Price</th>
+                                <th class="px-3 py-2 font-medium">Signal</th>
+                                <th class="px-3 py-2 font-medium">Strength</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {% for pos in result.positions %}
-                            <tr class="border-t border-slate-700/50 text-sm">
-                                <td class="px-3 py-2 text-slate-200 font-medium">{{ pos.asset }}</td>
-                                <td class="px-3 py-2 font-mono text-slate-300">{{ pos.shares }}</td>
-                                <td class="px-3 py-2 font-mono text-slate-300">{{ pos.entry_price }}</td>
-                                <td class="px-3 py-2 font-mono text-slate-300">{{ pos.current_price }}</td>
+                            {% for sig in result.recent_signals|reverse %}
+                            <tr class="border-t border-slate-700/50 text-sm
+                                {% if sig.signal == 'BUY' %}bg-green-900/10
+                                {% elif sig.signal == 'SELL' %}bg-red-900/10{% endif %}">
+                                <td class="px-3 py-2 text-slate-300 text-xs">{{ sig.date }}</td>
+                                <td class="px-3 py-2 font-mono text-slate-200">{{ sig.price }}</td>
                                 <td class="px-3 py-2 font-mono font-medium
-                                    {% if pos.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
-                                    {{ pos.unrealized_pnl }}
+                                    {% if sig.signal == 'BUY' %}text-green-400
+                                    {% elif sig.signal == 'SELL' %}text-red-400
+                                    {% else %}text-slate-500{% endif %}">
+                                    {{ sig.signal }}
                                 </td>
-                                <td class="px-3 py-2 font-mono text-xs
-                                    {% if pos.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
-                                    {{ pos.unrealized_pct }}
-                                </td>
-                                <td class="px-3 py-2 text-xs text-slate-400">{{ pos.entry_time }}</td>
+                                <td class="px-3 py-2 font-mono text-slate-400">{{ sig.strength }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -224,50 +227,6 @@
             </div>
             {% endif %}
 
-            <!-- Trade History -->
-            {% if result.trades %}
-            <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
-                <div class="px-4 py-3 border-b border-slate-700">
-                    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">
-                        Trade History ({{ result.trades|length }} completed trades)
-                    </h2>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full">
-                        <thead>
-                            <tr class="bg-slate-700/30 text-xs text-slate-400 uppercase tracking-wider">
-                                <th class="px-3 py-2 font-medium">#</th>
-                                <th class="px-3 py-2 font-medium">Entry</th>
-                                <th class="px-3 py-2 font-medium">Exit</th>
-                                <th class="px-3 py-2 font-medium">Entry Price</th>
-                                <th class="px-3 py-2 font-medium">Exit Price</th>
-                                <th class="px-3 py-2 font-medium">P&L</th>
-                                <th class="px-3 py-2 font-medium">P&L %</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for trade in result.trades %}
-                            <tr class="border-t border-slate-700/50 text-sm">
-                                <td class="px-3 py-2 text-slate-500">{{ loop.index }}</td>
-                                <td class="px-3 py-2 text-slate-300 text-xs">{{ trade.entry_time }}</td>
-                                <td class="px-3 py-2 text-slate-300 text-xs">{{ trade.exit_time }}</td>
-                                <td class="px-3 py-2 font-mono text-slate-200">{{ trade.entry_price }}</td>
-                                <td class="px-3 py-2 font-mono text-slate-200">{{ trade.exit_price }}</td>
-                                <td class="px-3 py-2 font-mono font-medium
-                                    {% if trade.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
-                                    {{ trade.pnl }}
-                                </td>
-                                <td class="px-3 py-2 font-mono text-xs
-                                    {% if trade.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
-                                    {{ trade.pnl_pct }}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            {% endif %}
         </div>
         {% endif %}
     </div>
