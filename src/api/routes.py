@@ -416,11 +416,11 @@ def create_app() -> FastAPI:
             except ValueError:
                 pass
 
-        # Filter date range
+        # Filter date range (strip tz to match tz-naive parquet timestamps)
         if start is not None:
-            df = df[df["timestamp"] >= pd.Timestamp(start)]
+            df = df[df["timestamp"] >= pd.Timestamp(start).tz_localize(None)]
         if end is not None:
-            df = df[df["timestamp"] <= pd.Timestamp(end)]
+            df = df[df["timestamp"] <= pd.Timestamp(end).tz_localize(None)]
 
         df = df.reset_index(drop=True)
 
