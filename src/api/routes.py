@@ -1,0 +1,597 @@
+"""FastAPI application with routes for the Market Signal Lab web UI.
+
+Serves HTMX-powered pages for watchlist, asset detail, backtest, and
+screener.  Also provides JSON API endpoints for signals and health.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import plotly
+import plotly.graph_objects as go
+from fastapi import FastAPI, Form, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from app.config import get_config, load_config
+from backtest.engine import BacktestEngine
+from backtest.metrics import BacktestResult
+from data.storage.parquet_store import ParquetStore
+from indicators.core import ema, sma
+from screener.scanner import Screener
+from signals.engine import SignalEngine
+from strategies import STRATEGY_REGISTRY, get_strategy
+from strategies.base import Signal
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Path setup
+# ---------------------------------------------------------------------------
+
+_SRC_DIR = Path(__file__).resolve().parent.parent  # src/
+_TEMPLATES_DIR = _SRC_DIR / "ui" / "templates"
+_STATIC_DIR = _SRC_DIR / "ui" / "static"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_store() -> ParquetStore:
+    """Return a ParquetStore using the configured directory."""
+    try:
+        storage_cfg = get_config("storage")
+        parquet_dir = storage_cfg.get("parquet_dir", "data/candles")
+    except KeyError:
+        parquet_dir = "data/candles"
+    return ParquetStore(parquet_dir)
+
+
+def _get_watchlist() -> list[dict[str, Any]]:
+    """Return the watchlist from config."""
+    try:
+        return get_config("watchlist") or []
+    except KeyError:
+        return []
+
+
+def _get_strategy_params() -> dict[str, dict[str, Any]]:
+    """Return the strategy params from config."""
+    try:
+        return get_config("strategies") or {}
+    except KeyError:
+        return {}
+
+
+def _get_fee_presets() -> dict[str, Any]:
+    """Return the fee presets from config."""
+    try:
+        return get_config("fee_presets") or {}
+    except KeyError:
+        return {}
+
+
+def _format_price(price: float) -> str:
+    """Format a price for display."""
+    if price >= 1000:
+        return f"${price:,.2f}"
+    elif price >= 1:
+        return f"${price:.2f}"
+    else:
+        return f"${price:.6f}"
+
+
+def _format_timestamp(ts_str: str) -> str:
+    """Format a timestamp string for display."""
+    try:
+        ts = pd.Timestamp(ts_str)
+        return ts.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ts_str[:16] if len(ts_str) > 16 else ts_str
+
+
+def _signal_color(signal_str: str) -> str:
+    """Return a CSS color class for a signal."""
+    if signal_str == "BUY":
+        return "text-green-400"
+    elif signal_str == "SELL":
+        return "text-red-400"
+    return "text-gray-400"
+
+
+def _build_candlestick_chart(
+    df: pd.DataFrame, symbol: str, sma_periods: list[int] | None = None,
+) -> dict[str, Any]:
+    """Build a Plotly candlestick chart as a JSON-serialisable dict."""
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Candlestick(
+            x=df["timestamp"].astype(str).tolist(),
+            open=df["open"].tolist(),
+            high=df["high"].tolist(),
+            low=df["low"].tolist(),
+            close=df["close"].tolist(),
+            name=symbol,
+            increasing_line_color="#22c55e",
+            decreasing_line_color="#ef4444",
+        )
+    )
+
+    # Add SMA overlays
+    if sma_periods:
+        colors = ["#60a5fa", "#fbbf24", "#a78bfa", "#f472b6"]
+        for idx, period in enumerate(sma_periods):
+            sma_vals = sma(df["close"], period)
+            color = colors[idx % len(colors)]
+            fig.add_trace(
+                go.Scatter(
+                    x=df["timestamp"].astype(str).tolist(),
+                    y=sma_vals.tolist(),
+                    mode="lines",
+                    name=f"SMA {period}",
+                    line=dict(width=1, color=color),
+                )
+            )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#111827",
+        plot_bgcolor="#1f2937",
+        font=dict(color="#d1d5db"),
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            gridcolor="#374151",
+        ),
+        yaxis=dict(gridcolor="#374151"),
+        margin=dict(l=50, r=20, t=40, b=40),
+        height=500,
+        title=dict(text=f"{symbol} Price Chart", font=dict(size=16)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    return json.loads(plotly.io.to_json(fig))
+
+
+def _build_equity_chart(equity_curve: pd.Series) -> dict[str, Any]:
+    """Build a Plotly line chart for the equity curve."""
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=[str(ts) for ts in equity_curve.index],
+            y=equity_curve.values.tolist(),
+            mode="lines",
+            name="Equity",
+            line=dict(width=2, color="#22c55e"),
+            fill="tozeroy",
+            fillcolor="rgba(34, 197, 94, 0.1)",
+        )
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#111827",
+        plot_bgcolor="#1f2937",
+        font=dict(color="#d1d5db"),
+        xaxis=dict(gridcolor="#374151"),
+        yaxis=dict(gridcolor="#374151", title="Equity ($)"),
+        margin=dict(l=60, r=20, t=40, b=40),
+        height=350,
+        title=dict(text="Equity Curve", font=dict(size=14)),
+    )
+
+    return json.loads(plotly.io.to_json(fig))
+
+
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+
+    # Ensure config is loaded
+    load_config()
+
+    app = FastAPI(
+        title="Market Signal Lab",
+        description="Educational trading research and backtesting platform",
+        version="0.1.0",
+    )
+
+    # CORS for local development
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Static files
+    _STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    # Templates
+    _TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+    # Add custom template filters
+    templates.env.filters["format_price"] = _format_price
+    templates.env.filters["format_timestamp"] = _format_timestamp
+    templates.env.filters["signal_color"] = _signal_color
+
+    # ------------------------------------------------------------------
+    # Routes
+    # ------------------------------------------------------------------
+
+    @app.get("/", response_class=RedirectResponse)
+    async def root():
+        """Redirect to watchlist."""
+        return RedirectResponse(url="/watchlist", status_code=302)
+
+    @app.get("/watchlist", response_class=HTMLResponse)
+    async def watchlist_page(request: Request):
+        """Render the watchlist page."""
+        watchlist = _get_watchlist()
+        store = _get_store()
+        engine = SignalEngine()
+
+        assets_data: list[dict[str, Any]] = []
+
+        for item in watchlist:
+            symbol = item["asset"]
+            timeframes = item.get("timeframes", ["1d"])
+            tf = timeframes[0] if timeframes else "1d"
+
+            df = store.load(symbol, tf)
+
+            if df.empty:
+                assets_data.append({
+                    "symbol": symbol,
+                    "price": "N/A",
+                    "timestamp": "No data",
+                    "signals": [],
+                    "dominant_signal": "HOLD",
+                    "strength": 0.0,
+                })
+                continue
+
+            # Prepare df for strategies (needs DatetimeIndex)
+            prepared = df.set_index("timestamp") if "timestamp" in df.columns else df
+
+            strategies_config = _get_strategy_params()
+            signal_results = engine.run_single(
+                prepared, symbol, tf, strategies_config=strategies_config,
+            )
+
+            price = float(df["close"].iloc[-1])
+            ts = str(df["timestamp"].iloc[-1]) if "timestamp" in df.columns else ""
+
+            signals_list = []
+            dominant = "HOLD"
+            max_strength = 0.0
+
+            for sr in signal_results:
+                sig_val = sr.signal.value
+                signals_list.append({
+                    "strategy": sr.strategy_name,
+                    "signal": sig_val,
+                    "strength": round(sr.strength, 2),
+                })
+                if sr.signal != Signal.HOLD and sr.strength > max_strength:
+                    max_strength = sr.strength
+                    dominant = sig_val
+
+            assets_data.append({
+                "symbol": symbol,
+                "price": _format_price(price),
+                "timestamp": _format_timestamp(ts),
+                "signals": signals_list,
+                "dominant_signal": dominant,
+                "strength": round(max_strength, 2),
+            })
+
+        return templates.TemplateResponse("watchlist.html", {
+            "request": request,
+            "assets": assets_data,
+        })
+
+    @app.get("/asset/{symbol}", response_class=HTMLResponse)
+    async def asset_detail_page(
+        request: Request,
+        symbol: str,
+        tf: str = Query(default="1d"),
+    ):
+        """Render the asset detail page."""
+        store = _get_store()
+        df = store.load(symbol, tf)
+
+        if df.empty:
+            return templates.TemplateResponse("asset_detail.html", {
+                "request": request,
+                "symbol": symbol,
+                "timeframe": tf,
+                "price": "No data",
+                "chart_json": "null",
+                "signals": [],
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+            })
+
+        price = float(df["close"].iloc[-1])
+
+        # Build chart
+        chart_data = _build_candlestick_chart(df, symbol, sma_periods=[20, 50])
+        chart_json = json.dumps(chart_data)
+
+        # Get signals
+        engine = SignalEngine()
+        prepared = df.set_index("timestamp") if "timestamp" in df.columns else df
+        strategies_config = _get_strategy_params()
+        signal_results = engine.run_single(
+            prepared, symbol, tf, strategies_config=strategies_config,
+        )
+
+        signals_list = []
+        for sr in signal_results:
+            signals_list.append({
+                "strategy": sr.strategy_name,
+                "signal": sr.signal.value,
+                "strength": round(sr.strength, 2),
+                "explanation": sr.explanation,
+            })
+
+        return templates.TemplateResponse("asset_detail.html", {
+            "request": request,
+            "symbol": symbol,
+            "timeframe": tf,
+            "price": _format_price(price),
+            "chart_json": chart_json,
+            "signals": signals_list,
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+            "fee_presets": list(_get_fee_presets().keys()),
+        })
+
+    @app.get("/asset/{symbol}/chart", response_class=JSONResponse)
+    async def asset_chart(
+        symbol: str,
+        tf: str = Query(default="1d"),
+    ):
+        """Return Plotly chart JSON for an asset."""
+        store = _get_store()
+        df = store.load(symbol, tf)
+
+        if df.empty:
+            return JSONResponse(content={"error": "No data available"}, status_code=404)
+
+        chart_data = _build_candlestick_chart(df, symbol, sma_periods=[20, 50])
+        return JSONResponse(content=chart_data)
+
+    @app.post("/backtest", response_class=HTMLResponse)
+    async def run_backtest(
+        request: Request,
+        asset: str = Form(...),
+        strategy: str = Form(...),
+        timeframe: str = Form(default="1d"),
+        start_date: str = Form(default=""),
+        end_date: str = Form(default=""),
+        fee_preset: str = Form(default="crypto_major"),
+    ):
+        """Run a backtest and return the results page."""
+        store = _get_store()
+        df = store.load(asset, timeframe)
+
+        if df.empty:
+            return templates.TemplateResponse("backtest.html", {
+                "request": request,
+                "error": f"No data available for {asset} ({timeframe})",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+            })
+
+        # Parse dates
+        start = None
+        end = None
+        if start_date:
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        if end_date:
+            try:
+                end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
+        # Filter date range
+        if start is not None:
+            df = df[df["timestamp"] >= pd.Timestamp(start)]
+        if end is not None:
+            df = df[df["timestamp"] <= pd.Timestamp(end)]
+
+        df = df.reset_index(drop=True)
+
+        if len(df) < 2:
+            return templates.TemplateResponse("backtest.html", {
+                "request": request,
+                "error": "Insufficient data for the selected date range.",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+            })
+
+        # Get strategy params
+        strat_cfg = _get_strategy_params()
+        params = strat_cfg.get(strategy, {}).get(timeframe, {})
+
+        # Run backtest
+        strat_obj = get_strategy(strategy)
+        engine = BacktestEngine(
+            initial_capital=10_000.0,
+            fee_preset=fee_preset,
+        )
+        result: BacktestResult = engine.run(
+            df, strat_obj, params, asset=asset, timeframe=timeframe,
+        )
+
+        # Build equity chart
+        equity_chart = _build_equity_chart(result.equity_curve)
+        equity_chart_json = json.dumps(equity_chart)
+
+        # Format trades
+        formatted_trades = []
+        for t in result.trades:
+            formatted_trades.append({
+                "entry_time": _format_timestamp(str(t.get("entry_time", ""))),
+                "exit_time": _format_timestamp(str(t.get("exit_time", ""))),
+                "entry_price": f"${t.get('entry_price', 0):.4f}",
+                "exit_price": f"${t.get('exit_price', 0):.4f}",
+                "pnl": f"${t.get('pnl', 0):.2f}",
+                "pnl_pct": f"{t.get('pnl_pct', 0) * 100:.2f}%",
+                "side": t.get("side", "long"),
+                "exit_reason": t.get("exit_reason", "signal"),
+                "pnl_positive": t.get("pnl", 0) > 0,
+            })
+
+        return templates.TemplateResponse("backtest.html", {
+            "request": request,
+            "error": None,
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+            "fee_presets": list(_get_fee_presets().keys()),
+            "result": {
+                "asset": asset,
+                "strategy": strategy,
+                "timeframe": timeframe,
+                "cagr": f"{result.cagr * 100:.2f}%",
+                "sharpe": f"{result.sharpe:.2f}",
+                "max_drawdown": f"{result.max_drawdown * 100:.2f}%",
+                "win_rate": f"{result.win_rate * 100:.1f}%",
+                "profit_factor": f"{result.profit_factor:.2f}" if result.profit_factor != float("inf") else "Inf",
+                "exposure": f"{result.exposure * 100:.1f}%",
+                "total_trades": result.total_trades,
+                "total_bars": result.total_bars,
+                "initial_capital": f"${result.initial_capital:,.2f}",
+                "final_equity": f"${result.final_equity:,.2f}",
+                "equity_chart_json": equity_chart_json,
+                "trades": formatted_trades,
+            },
+        })
+
+    @app.get("/backtest", response_class=HTMLResponse)
+    async def backtest_page(request: Request):
+        """Render the backtest form page."""
+        return templates.TemplateResponse("backtest.html", {
+            "request": request,
+            "error": None,
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+            "fee_presets": list(_get_fee_presets().keys()),
+            "result": None,
+        })
+
+    @app.get("/screener", response_class=HTMLResponse)
+    async def screener_page(
+        request: Request,
+        universe: str = Query(default="crypto"),
+        tf: str = Query(default="1d"),
+    ):
+        """Render the screener results page."""
+        screener = Screener()
+        results = screener.scan(universe_name=universe, timeframe=tf)
+
+        formatted_results = []
+        for rank, r in enumerate(results, start=1):
+            # Determine dominant signal
+            buy_signals = [s for s in r.signals if s.signal == Signal.BUY]
+            sell_signals = [s for s in r.signals if s.signal == Signal.SELL]
+
+            if buy_signals:
+                dominant = "BUY"
+                strength = max(s.strength for s in buy_signals)
+            elif sell_signals:
+                dominant = "SELL"
+                strength = max(s.strength for s in sell_signals)
+            else:
+                dominant = "HOLD"
+                strength = 0.0
+
+            formatted_results.append({
+                "rank": rank,
+                "asset": r.asset,
+                "price": _format_price(r.price),
+                "volume": f"{r.volume:,.0f}",
+                "signal": dominant,
+                "strength": f"{strength:.2f}",
+                "composite_score": f"{r.composite_score:.3f}",
+            })
+
+        return templates.TemplateResponse("screener.html", {
+            "request": request,
+            "universe": universe,
+            "timeframe": tf,
+            "results": formatted_results,
+        })
+
+    @app.get("/api/signals", response_class=JSONResponse)
+    async def api_signals(
+        tf: str = Query(default="1d"),
+    ):
+        """JSON endpoint returning latest signals for all watchlist assets."""
+        watchlist = _get_watchlist()
+        store = _get_store()
+        engine = SignalEngine()
+        strategies_config = _get_strategy_params()
+
+        output: list[dict[str, Any]] = []
+
+        for item in watchlist:
+            symbol = item["asset"]
+            df = store.load(symbol, tf)
+
+            if df.empty:
+                output.append({"symbol": symbol, "signals": []})
+                continue
+
+            prepared = df.set_index("timestamp") if "timestamp" in df.columns else df
+            signal_results = engine.run_single(
+                prepared, symbol, tf, strategies_config=strategies_config,
+            )
+
+            output.append({
+                "symbol": symbol,
+                "price": float(df["close"].iloc[-1]),
+                "timestamp": str(df["timestamp"].iloc[-1]) if "timestamp" in df.columns else "",
+                "signals": [
+                    {
+                        "strategy": sr.strategy_name,
+                        "signal": sr.signal.value,
+                        "strength": round(sr.strength, 4),
+                    }
+                    for sr in signal_results
+                ],
+            })
+
+        return JSONResponse(content={"timeframe": tf, "assets": output})
+
+    @app.get("/api/health", response_class=JSONResponse)
+    async def health_check():
+        """Health check endpoint."""
+        return JSONResponse(content={
+            "status": "ok",
+            "service": "market-signal-lab",
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+        })
+
+    return app

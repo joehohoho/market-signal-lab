@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% set active_page = "screener" %}
+
+{% block title %}Screener - Market Signal Lab{% endblock %}
+
+{% block content %}
+<div class="fade-in">
+    <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold text-slate-100">Screener</h1>
+    </div>
+
+    <!-- Controls -->
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 mb-6">
+        <div class="flex flex-wrap items-center gap-4">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Universe</label>
+                <div class="flex space-x-2">
+                    <a href="/screener?universe=crypto&tf={{ timeframe }}"
+                       class="px-3 py-1.5 text-sm rounded border transition-colors
+                              {% if universe == 'crypto' %}bg-blue-600 border-blue-500 text-white
+                              {% else %}bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600{% endif %}">
+                        Crypto
+                    </a>
+                    <a href="/screener?universe=stocks_daily&tf={{ timeframe }}"
+                       class="px-3 py-1.5 text-sm rounded border transition-colors
+                              {% if universe == 'stocks_daily' %}bg-blue-600 border-blue-500 text-white
+                              {% else %}bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600{% endif %}">
+                        Stocks Daily
+                    </a>
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Timeframe</label>
+                <div class="flex space-x-2">
+                    <a href="/screener?universe={{ universe }}&tf=15m"
+                       class="px-3 py-1.5 text-sm rounded border transition-colors
+                              {% if timeframe == '15m' %}bg-blue-600 border-blue-500 text-white
+                              {% else %}bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600{% endif %}">
+                        15m
+                    </a>
+                    <a href="/screener?universe={{ universe }}&tf=1d"
+                       class="px-3 py-1.5 text-sm rounded border transition-colors
+                              {% if timeframe == '1d' %}bg-blue-600 border-blue-500 text-white
+                              {% else %}bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600{% endif %}">
+                        1D
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Table -->
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+        <table class="w-full">
+            <thead>
+                <tr class="bg-slate-700/50 text-xs text-slate-400 uppercase tracking-wider">
+                    <th class="px-4 py-3 font-medium">Rank</th>
+                    <th class="px-4 py-3 font-medium">Asset</th>
+                    <th class="px-4 py-3 font-medium">Price</th>
+                    <th class="px-4 py-3 font-medium">Volume</th>
+                    <th class="px-4 py-3 font-medium">Signal</th>
+                    <th class="px-4 py-3 font-medium">Strength</th>
+                    <th class="px-4 py-3 font-medium">Composite Score</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in results %}
+                <tr class="border-t border-slate-700 hover:bg-slate-700/30 transition-colors cursor-pointer"
+                    onclick="window.location='/asset/{{ row.asset }}'">
+                    <td class="px-4 py-3 text-sm text-slate-400 font-mono">{{ row.rank }}</td>
+                    <td class="px-4 py-3">
+                        <a href="/asset/{{ row.asset }}" class="text-blue-400 hover:text-blue-300 font-medium text-sm">
+                            {{ row.asset }}
+                        </a>
+                    </td>
+                    <td class="px-4 py-3 text-sm text-slate-200 font-mono">{{ row.price }}</td>
+                    <td class="px-4 py-3 text-sm text-slate-400 font-mono">{{ row.volume }}</td>
+                    <td class="px-4 py-3">
+                        <span class="text-sm font-semibold
+                            {% if row.signal == 'BUY' %}signal-buy
+                            {% elif row.signal == 'SELL' %}signal-sell
+                            {% else %}signal-hold{% endif %}">
+                            {{ row.signal }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-3">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-16 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                                <div class="h-full rounded-full
+                                    {% if row.signal == 'BUY' %}bg-green-400
+                                    {% elif row.signal == 'SELL' %}bg-red-400
+                                    {% else %}bg-slate-500{% endif %}"
+                                    style="width: {{ (row.strength|float * 100)|int }}%">
+                                </div>
+                            </div>
+                            <span class="text-xs font-mono text-slate-400">{{ row.strength }}</span>
+                        </div>
+                    </td>
+                    <td class="px-4 py-3 text-sm text-slate-200 font-mono">{{ row.composite_score }}</td>
+                </tr>
+                {% endfor %}
+
+                {% if not results %}
+                <tr>
+                    <td colspan="7" class="px-4 py-8 text-center text-slate-500">
+                        No assets with active signals found.
+                        Make sure data has been ingested for the selected universe.
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

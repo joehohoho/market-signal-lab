@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% set active_page = "watchlist" %}
+
+{% block title %}Watchlist - Market Signal Lab{% endblock %}
+
+{% block content %}
+<div class="fade-in">
+    <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold text-slate-100">Watchlist</h1>
+        <span class="text-xs text-slate-500">
+            Auto-refreshes every 60s
+        </span>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+        <table class="w-full">
+            <thead>
+                <tr class="bg-slate-700/50 text-xs text-slate-400 uppercase tracking-wider">
+                    <th class="px-4 py-3 font-medium">Asset</th>
+                    <th class="px-4 py-3 font-medium">Price</th>
+                    <th class="px-4 py-3 font-medium">Last Updated</th>
+                    <th class="px-4 py-3 font-medium">Active Signals</th>
+                    <th class="px-4 py-3 font-medium">Strength</th>
+                </tr>
+            </thead>
+            <tbody id="watchlist-body"
+                   hx-get="/watchlist"
+                   hx-trigger="every 60s"
+                   hx-select="#watchlist-body tr"
+                   hx-swap="innerHTML">
+                {% for asset in assets %}
+                <tr class="border-t border-slate-700 hover:bg-slate-700/30 transition-colors cursor-pointer"
+                    onclick="window.location='/asset/{{ asset.symbol }}'">
+                    <td class="px-4 py-3">
+                        <a href="/asset/{{ asset.symbol }}" class="text-blue-400 hover:text-blue-300 font-medium">
+                            {{ asset.symbol }}
+                        </a>
+                    </td>
+                    <td class="px-4 py-3 text-slate-200 font-mono text-sm">
+                        {{ asset.price }}
+                    </td>
+                    <td class="px-4 py-3 text-slate-400 text-sm">
+                        {{ asset.timestamp }}
+                    </td>
+                    <td class="px-4 py-3">
+                        {% if asset.signals %}
+                            {% for sig in asset.signals %}
+                                <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded mr-1
+                                    {% if sig.signal == 'BUY' %}bg-green-900/50 text-green-400
+                                    {% elif sig.signal == 'SELL' %}bg-red-900/50 text-red-400
+                                    {% else %}bg-slate-700 text-slate-400{% endif %}">
+                                    {{ sig.strategy|replace('_', ' ')|title }}: {{ sig.signal }}
+                                </span>
+                            {% endfor %}
+                        {% else %}
+                            <span class="text-xs text-slate-500">No signals</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3">
+                        {% if asset.dominant_signal == 'BUY' %}
+                            <div class="flex items-center space-x-2">
+                                <div class="w-16 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                                    <div class="h-full bg-green-400 rounded-full" style="width: {{ (asset.strength * 100)|int }}%"></div>
+                                </div>
+                                <span class="text-xs text-green-400 font-mono">{{ asset.strength }}</span>
+                            </div>
+                        {% elif asset.dominant_signal == 'SELL' %}
+                            <div class="flex items-center space-x-2">
+                                <div class="w-16 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                                    <div class="h-full bg-red-400 rounded-full" style="width: {{ (asset.strength * 100)|int }}%"></div>
+                                </div>
+                                <span class="text-xs text-red-400 font-mono">{{ asset.strength }}</span>
+                            </div>
+                        {% else %}
+                            <span class="text-xs text-slate-500">--</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+
+                {% if not assets %}
+                <tr>
+                    <td colspan="5" class="px-4 py-8 text-center text-slate-500">
+                        No watchlist assets configured. Add assets to config/config.yaml under the watchlist section,
+                        then ingest data with: <code class="bg-slate-700 px-1 rounded">msl ingest --asset BTC-USD --tf 1d --start 2023-01-01</code>
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

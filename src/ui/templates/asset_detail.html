@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% set active_page = "watchlist" %}
+
+{% block title %}{{ symbol }} - Market Signal Lab{% endblock %}
+
+{% block content %}
+<div class="fade-in">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <a href="/watchlist" class="text-sm text-slate-400 hover:text-slate-300">&larr; Watchlist</a>
+            <h1 class="text-2xl font-bold text-slate-100 mt-1">{{ symbol }}</h1>
+            <p class="text-xl font-mono text-slate-200">{{ price }}</p>
+        </div>
+        <div class="flex space-x-2">
+            <a href="/asset/{{ symbol }}?tf=15m"
+               class="px-3 py-1.5 text-sm rounded border
+                      {% if timeframe == '15m' %}bg-blue-600 border-blue-500 text-white
+                      {% else %}bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700{% endif %}">
+                15m
+            </a>
+            <a href="/asset/{{ symbol }}?tf=1d"
+               class="px-3 py-1.5 text-sm rounded border
+                      {% if timeframe == '1d' %}bg-blue-600 border-blue-500 text-white
+                      {% else %}bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700{% endif %}">
+                1D
+            </a>
+        </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 mb-6">
+        <div id="price-chart" class="w-full" style="height: 500px;">
+            {% if chart_json != 'null' %}
+                <script>
+                    document.addEventListener('DOMContentLoaded', function() {
+                        renderChart('price-chart', {{ chart_json|safe }});
+                    });
+                </script>
+            {% else %}
+                <div class="flex items-center justify-center h-full text-slate-500">
+                    No chart data available. Ingest data first.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Signals Table -->
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-slate-700">
+            <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Current Signals</h2>
+        </div>
+        <table class="w-full">
+            <thead>
+                <tr class="bg-slate-700/30 text-xs text-slate-400 uppercase tracking-wider">
+                    <th class="px-4 py-2 font-medium">Strategy</th>
+                    <th class="px-4 py-2 font-medium">Signal</th>
+                    <th class="px-4 py-2 font-medium">Strength</th>
+                    <th class="px-4 py-2 font-medium">Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for sig in signals %}
+                <tr class="border-t border-slate-700/50">
+                    <td class="px-4 py-2 text-sm text-slate-200">
+                        {{ sig.strategy|replace('_', ' ')|title }}
+                    </td>
+                    <td class="px-4 py-2">
+                        <span class="text-sm font-semibold
+                            {% if sig.signal == 'BUY' %}signal-buy
+                            {% elif sig.signal == 'SELL' %}signal-sell
+                            {% else %}signal-hold{% endif %}">
+                            {{ sig.signal }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-2">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-20 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                                <div class="h-full rounded-full
+                                    {% if sig.signal == 'BUY' %}bg-green-400
+                                    {% elif sig.signal == 'SELL' %}bg-red-400
+                                    {% else %}bg-slate-500{% endif %}"
+                                    style="width: {{ (sig.strength * 100)|int }}%">
+                                </div>
+                            </div>
+                            <span class="text-xs font-mono text-slate-400">{{ sig.strength }}</span>
+                        </div>
+                    </td>
+                    <td class="px-4 py-2 text-xs text-slate-500 font-mono">
+                        {% for key, val in sig.explanation.items() %}
+                            {% if val is not none %}
+                                {{ key }}={{ val }}{% if not loop.last %}, {% endif %}
+                            {% endif %}
+                        {% endfor %}
+                    </td>
+                </tr>
+                {% endfor %}
+
+                {% if not signals %}
+                <tr>
+                    <td colspan="4" class="px-4 py-6 text-center text-slate-500 text-sm">
+                        No signals available. Ensure data has been ingested for this asset.
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Backtest Button -->
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Run Backtest</h2>
+        <form action="/backtest" method="post" class="flex flex-wrap items-end gap-3">
+            <input type="hidden" name="asset" value="{{ symbol }}">
+            <input type="hidden" name="timeframe" value="{{ timeframe }}">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Strategy</label>
+                <select name="strategy"
+                        class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+                    {% for s in strategies %}
+                    <option value="{{ s }}">{{ s|replace('_', ' ')|title }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Fee Preset</label>
+                <select name="fee_preset"
+                        class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+                    {% for fp in fee_presets %}
+                    <option value="{{ fp }}">{{ fp|replace('_', ' ')|title }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Start Date</label>
+                <input type="date" name="start_date"
+                       class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">End Date</label>
+                <input type="date" name="end_date"
+                       class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+            </div>
+            <button type="submit"
+                    class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded transition-colors">
+                Run Backtest
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

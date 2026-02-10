@@ -1,0 +1,141 @@
+# Market Signal Lab - Configuration
+# Copy to config/config.yaml and edit
+
+# Data storage
+storage:
+  db_path: "data/msl.duckdb"
+  parquet_dir: "data/candles"
+
+# Data providers
+providers:
+  crypto:
+    default: "kraken"
+  equity:
+    default: "yahoo_daily"   # Free daily OHLCV; hobby use only
+  # Per-symbol overrides (optional):
+  # overrides:
+  #   ETH-USD: coinbase
+  #   TSLA: alpha_vantage
+
+# Watchlist - assets to monitor
+watchlist:
+  - asset: BTC-USD
+    timeframes: ["15m", "1d"]
+    asset_class: crypto
+  - asset: ETH-USD
+    timeframes: ["15m", "1d"]
+    asset_class: crypto
+  - asset: AAPL
+    timeframes: ["1d"]
+    asset_class: equity
+  - asset: MSFT
+    timeframes: ["1d"]
+    asset_class: equity
+  - asset: SHOP.TO
+    timeframes: ["1d"]
+    asset_class: equity
+
+# Strategy parameters per timeframe
+strategies:
+  sma_crossover:
+    "1d":
+      fast_period: 10
+      slow_period: 30
+      atr_period: 14
+      atr_filter_mult: 1.0    # Require ATR > atr_filter_mult * avg ATR
+    "15m":
+      fast_period: 8
+      slow_period: 21
+      atr_period: 14
+      atr_filter_mult: 0.8
+
+  rsi_mean_reversion:
+    "1d":
+      rsi_period: 14
+      rsi_oversold: 30
+      rsi_overbought: 70
+      trend_ma_period: 200
+    "15m":
+      rsi_period: 14
+      rsi_oversold: 25
+      rsi_overbought: 75
+      trend_ma_period: 100
+
+  donchian_breakout:
+    "1d":
+      channel_period: 20
+      volume_ma_period: 20
+      volume_mult: 1.5         # Volume must be > 1.5x average
+    "15m":
+      channel_period: 15
+      volume_ma_period: 20
+      volume_mult: 1.3
+
+# Fee/slippage/spread presets
+fee_presets:
+  crypto_major:
+    fee_pct: 0.001          # 0.1% taker fee
+    slippage_pct: 0.0005    # 0.05%
+    spread_pct: 0.0002      # 0.02%
+  liquid_stock:
+    fee_pct: 0.0             # Commission-free brokers
+    slippage_pct: 0.0003
+    spread_pct: 0.0001
+  penny_stock:
+    fee_pct: 0.0
+    slippage_pct: 0.005      # 0.5% - wider spreads
+    spread_pct: 0.003        # 0.3%
+
+# Risk controls per strategy/timeframe
+risk:
+  default:
+    stop_loss: "atr_multiple"   # none | fixed_percent | atr_multiple
+    atr_stop_mult: 2.0          # Exit if price drops > 2x ATR from entry
+    fixed_stop_pct: 0.05        # 5% (used when stop_loss=fixed_percent)
+    position_size_pct: 0.1      # 10% of portfolio per trade
+
+# Screener settings
+screener:
+  universes:
+    crypto:
+      assets: ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "DOGE-USD",
+               "XRP-USD", "DOT-USD", "AVAX-USD", "LINK-USD", "MATIC-USD"]
+    stocks_daily:
+      # Will scan from a broader list; penny_stock_threshold filters < $5
+      penny_stock_threshold: 5.0
+      min_volume: 100000
+      exchanges: ["us", "canada"]
+
+# Slack alerts
+alerts:
+  slack:
+    enabled: false
+    webhook_url: ""    # Set via SLACK_WEBHOOK_URL env var or here
+    # Which signals trigger alerts:
+    triggers:
+      - strategy: "*"           # All strategies
+        timeframes: ["1d", "15m"]
+        signals: ["BUY", "SELL"]
+
+# ML module (optional)
+ml:
+  enabled: false
+  horizon_bars:
+    "1d": 5     # Predict 5-day forward return
+    "15m": 20   # Predict ~5 hours forward
+  score_threshold: 0.55
+  min_train_samples: 500
+  walk_forward_windows: 5
+
+# AI module (optional, local-only)
+ai:
+  enabled: false
+  adapter: "null"          # "null" or "ollama"
+  ollama:
+    model: "qwen2.5:7b-instruct"   # Small model for CPU
+    base_url: "http://localhost:11434"
+
+# Server
+server:
+  host: "0.0.0.0"
+  port: 8000

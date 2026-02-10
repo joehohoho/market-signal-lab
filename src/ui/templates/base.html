@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Market Signal Lab{% endblock %}</title>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#0f172a',
+                            800: '#1e293b',
+                            700: '#334155',
+                            600: '#475569',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+
+    <!-- Plotly -->
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+
+    <!-- App JS -->
+    <script src="/static/app.js" defer></script>
+
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #e2e8f0;
+        }
+        .nav-link {
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .nav-link:hover {
+            color: #60a5fa;
+        }
+        .nav-link.active {
+            color: #60a5fa;
+            border-bottom: 2px solid #60a5fa;
+        }
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+        .signal-buy { color: #22c55e; }
+        .signal-sell { color: #ef4444; }
+        .signal-hold { color: #9ca3af; }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        table {
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Navigation -->
+    <nav class="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-14">
+                <div class="flex items-center space-x-8">
+                    <a href="/watchlist" class="text-lg font-bold text-blue-400 tracking-tight">
+                        MSL
+                    </a>
+                    <div class="flex space-x-6">
+                        <a href="/watchlist"
+                           class="nav-link py-4 text-sm font-medium text-slate-300 border-b-2 border-transparent
+                                  {% if active_page == 'watchlist' %}active{% endif %}">
+                            Watchlist
+                        </a>
+                        <a href="/screener"
+                           class="nav-link py-4 text-sm font-medium text-slate-300 border-b-2 border-transparent
+                                  {% if active_page == 'screener' %}active{% endif %}">
+                            Screener
+                        </a>
+                        <a href="/backtest"
+                           class="nav-link py-4 text-sm font-medium text-slate-300 border-b-2 border-transparent
+                                  {% if active_page == 'backtest' %}active{% endif %}">
+                            Backtest
+                        </a>
+                    </div>
+                </div>
+                <div class="text-xs text-slate-500">
+                    Educational Use Only
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-slate-800 border-t border-slate-700 py-4 mt-auto">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <p class="text-center text-xs text-slate-500">
+                Educational use only. Not financial advice.
+                Market Signal Lab is for research purposes.
+            </p>
+        </div>
+    </footer>
+
+</body>
+</html>

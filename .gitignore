@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific data (local only)
+data/*.duckdb
+data/*.duckdb.wal
+data/candles/
+
+# Config (only the example is committed)
+config/config.yaml
+
+# Environment variables
+.env
+.env.*
+
+# ML model artefacts
+models/
+
+# Jupyter
+.ipynb_checkpoints/
