@@ -113,11 +113,12 @@ def _detect_gaps(
     interval_seconds = _timeframe_to_seconds(timeframe)
     threshold = timedelta(seconds=interval_seconds * 2.5)
 
-    ts = existing["timestamp"].sort_values()
-    start_ts = pd.Timestamp(start)
-    start_utc = start_ts if start_ts.tzinfo is not None else start_ts.tz_localize("UTC")
-    end_ts = pd.Timestamp(end)
-    end_utc = end_ts if end_ts.tzinfo is not None else end_ts.tz_localize("UTC")
+    ts = pd.to_datetime(existing["timestamp"]).sort_values()
+    # Normalise everything to tz-naive UTC so comparisons never mix aware/naive
+    if ts.dt.tz is not None:
+        ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+    start_utc = pd.Timestamp(start).tz_localize(None) if pd.Timestamp(start).tzinfo is not None else pd.Timestamp(start)
+    end_utc = pd.Timestamp(end).tz_localize(None) if pd.Timestamp(end).tzinfo is not None else pd.Timestamp(end)
 
     gaps: list[tuple[datetime, datetime]] = []
 

@@ -168,7 +168,7 @@ class ParquetStore:
         """Read a parquet file into a DataFrame with canonical dtypes."""
         table = pq.read_table(path)
         df = table.to_pandas()
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
         return df
 
     @staticmethod
@@ -179,7 +179,7 @@ class ParquetStore:
             raise ValueError(f"DataFrame is missing required columns: {missing}")
 
         df = df[CANDLE_COLUMNS].copy()
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
         for col in ("open", "high", "low", "close", "volume"):
             df[col] = df[col].astype("float64")
         return df
