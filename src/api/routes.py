@@ -25,6 +25,7 @@ from app.config import get_config, load_config
 from backtest.engine import BacktestEngine
 from backtest.metrics import BacktestResult
 from backtest.optimizer import ParameterOptimizer
+from data.providers.yfinance_provider import YFinanceProvider
 from data.storage.parquet_store import ParquetStore
 from indicators.core import ema, sma
 from paper.simulator import PaperTradingSimulator
@@ -524,31 +525,36 @@ def create_app() -> FastAPI:
         period: str = Form(default="1y"),
         fee_preset: str = Form(default="crypto_major"),
     ):
-        """Run a paper trading simulation over recent market data."""
-        store = _get_store()
-        df = store.load(asset, timeframe)
+        """Run a paper trading simulation with live market data."""
+        # Determine how far back to fetch
+        period_days = {"30d": 30, "90d": 90, "6m": 180, "1y": 365, "all": 3650}
+        days = period_days.get(period, 365)
 
-        if df.empty:
+        # Add extra warmup bars for strategy indicators (e.g. SMA needs history)
+        warmup_days = 60
+        end_dt = datetime.now(tz=timezone.utc)
+        start_dt = end_dt - pd.Timedelta(days=days + warmup_days)
+
+        # Fetch live data from yfinance
+        try:
+            provider = YFinanceProvider()
+            df = provider.fetch_ohlcv(asset, timeframe, start_dt, end_dt)
+            # Normalise to tz-naive UTC (consistent with rest of app)
+            if not df.empty and df["timestamp"].dt.tz is not None:
+                df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+        except Exception as exc:
             return templates.TemplateResponse("simulate.html", {
                 "request": request,
-                "error": f"No data available for {asset} ({timeframe}). Run: msl ingest {asset}",
+                "error": f"Failed to fetch live data for {asset}: {exc}",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
                 "result": None,
             })
 
-        # Filter to simulation period
-        now = df["timestamp"].max()
-        period_days = {"30d": 30, "90d": 90, "6m": 180, "1y": 365}
-        days = period_days.get(period)
-        if days is not None:
-            cutoff = now - pd.Timedelta(days=days)
-            df = df[df["timestamp"] >= cutoff].reset_index(drop=True)
-
-        if len(df) < 2:
+        if df.empty or len(df) < 2:
             return templates.TemplateResponse("simulate.html", {
                 "request": request,
-                "error": "Insufficient data for the selected period.",
+                "error": f"No data available for {asset} ({timeframe}). Check the ticker symbol.",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
                 "result": None,
@@ -573,7 +579,7 @@ def create_app() -> FastAPI:
         if optimized is not None:
             params = {**params, **optimized}
 
-        # Compute signals for all bars
+        # Compute signals for all bars (including warmup)
         prepared = df.set_index("timestamp") if "timestamp" in df.columns else df.copy()
         if not isinstance(prepared.index, pd.DatetimeIndex):
             prepared.index = pd.to_datetime(prepared.index)
@@ -589,7 +595,16 @@ def create_app() -> FastAPI:
                 "result": None,
             })
 
-        # Run paper trading simulation
+        # Determine where the actual simulation period starts (after warmup)
+        sim_cutoff = end_dt - pd.Timedelta(days=days)
+        sim_cutoff_naive = pd.Timestamp(sim_cutoff).tz_localize(None)
+        sim_start_idx = 0
+        for idx_i in range(len(df)):
+            if df.iloc[idx_i]["timestamp"] >= sim_cutoff_naive:
+                sim_start_idx = idx_i
+                break
+
+        # Run paper trading simulation across all bars
         sim = PaperTradingSimulator(
             initial_capital=capital,
             fee_preset=fee_preset,
@@ -616,9 +631,13 @@ def create_app() -> FastAPI:
 
             sim.step(candle, step_signals)
 
-            equity = sim.get_portfolio_value({asset: float(row["close"])})
-            equity_values.append(equity)
-            equity_dates.append(row["timestamp"])
+            # Only track equity for the actual simulation period
+            if i >= sim_start_idx:
+                equity = sim.get_portfolio_value({asset: float(row["close"])})
+                equity_values.append(equity)
+                equity_dates.append(row["timestamp"])
+
+        sim_bars = len(df) - sim_start_idx
 
         # Build equity curve chart
         equity_series = pd.Series(equity_values, index=pd.to_datetime(equity_dates))
@@ -691,7 +710,8 @@ def create_app() -> FastAPI:
                 "total_pnl": f"${total_pnl:,.2f}",
                 "total_pnl_pct": f"{total_pnl_pct:.2f}%",
                 "total_trades": len(trades),
-                "total_bars": len(df),
+                "total_bars": sim_bars,
+                "data_as_of": _format_timestamp(str(df["timestamp"].iloc[-1])),
                 "current_signal": current_signal_str,
                 "current_strength": f"{current_strength:.2f}",
                 "equity_chart_json": equity_chart_json,
