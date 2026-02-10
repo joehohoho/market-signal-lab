@@ -24,8 +24,10 @@ from fastapi.templating import Jinja2Templates
 from app.config import get_config, load_config
 from backtest.engine import BacktestEngine
 from backtest.metrics import BacktestResult
+from backtest.optimizer import ParameterOptimizer
 from data.storage.parquet_store import ParquetStore
 from indicators.core import ema, sma
+from paper.simulator import PaperTradingSimulator
 from screener.scanner import Screener
 from signals.engine import SignalEngine
 from strategies import STRATEGY_REGISTRY, get_strategy
@@ -499,6 +501,204 @@ def create_app() -> FastAPI:
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
             "result": None,
+        })
+
+    @app.get("/simulate", response_class=HTMLResponse)
+    async def simulate_page(request: Request):
+        """Render the simulation form page."""
+        return templates.TemplateResponse("simulate.html", {
+            "request": request,
+            "error": None,
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+            "fee_presets": list(_get_fee_presets().keys()),
+            "result": None,
+        })
+
+    @app.post("/simulate", response_class=HTMLResponse)
+    async def run_simulation(
+        request: Request,
+        asset: str = Form(...),
+        strategy: str = Form(...),
+        timeframe: str = Form(default="1d"),
+        capital: float = Form(default=10000.0),
+        period: str = Form(default="1y"),
+        fee_preset: str = Form(default="crypto_major"),
+    ):
+        """Run a paper trading simulation over recent market data."""
+        store = _get_store()
+        df = store.load(asset, timeframe)
+
+        if df.empty:
+            return templates.TemplateResponse("simulate.html", {
+                "request": request,
+                "error": f"No data available for {asset} ({timeframe}). Run: msl ingest {asset}",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+            })
+
+        # Filter to simulation period
+        now = df["timestamp"].max()
+        period_days = {"30d": 30, "90d": 90, "6m": 180, "1y": 365}
+        days = period_days.get(period)
+        if days is not None:
+            cutoff = now - pd.Timedelta(days=days)
+            df = df[df["timestamp"] >= cutoff].reset_index(drop=True)
+
+        if len(df) < 2:
+            return templates.TemplateResponse("simulate.html", {
+                "request": request,
+                "error": "Insufficient data for the selected period.",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+            })
+
+        # Get strategy + params (with optimized overlay)
+        try:
+            strat_obj = get_strategy(strategy)
+        except ValueError:
+            return templates.TemplateResponse("simulate.html", {
+                "request": request,
+                "error": f"Unknown strategy: {strategy}",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+            })
+
+        strat_cfg = _get_strategy_params()
+        params = strat_cfg.get(strategy, {}).get(timeframe, {})
+
+        optimized = ParameterOptimizer.load_optimized(strategy, asset, timeframe)
+        if optimized is not None:
+            params = {**params, **optimized}
+
+        # Compute signals for all bars
+        prepared = df.set_index("timestamp") if "timestamp" in df.columns else df.copy()
+        if not isinstance(prepared.index, pd.DatetimeIndex):
+            prepared.index = pd.to_datetime(prepared.index)
+
+        try:
+            all_signals = strat_obj.compute(prepared, asset, timeframe, params)
+        except Exception as exc:
+            return templates.TemplateResponse("simulate.html", {
+                "request": request,
+                "error": f"Strategy error: {exc}",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+            })
+
+        # Run paper trading simulation
+        sim = PaperTradingSimulator(
+            initial_capital=capital,
+            fee_preset=fee_preset,
+            position_size_pct=1.0,
+        )
+
+        equity_values: list[float] = []
+        equity_dates: list[Any] = []
+
+        for i in range(len(df)):
+            row = df.iloc[i]
+            candle = {
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row.get("volume", 0)),
+                "timestamp": str(row["timestamp"]),
+            }
+
+            step_signals: dict[str, Any] = {}
+            if i < len(all_signals):
+                step_signals = {asset: all_signals[i]}
+
+            sim.step(candle, step_signals)
+
+            equity = sim.get_portfolio_value({asset: float(row["close"])})
+            equity_values.append(equity)
+            equity_dates.append(row["timestamp"])
+
+        # Build equity curve chart
+        equity_series = pd.Series(equity_values, index=pd.to_datetime(equity_dates))
+        equity_chart = _build_equity_chart(equity_series)
+        equity_chart_json = json.dumps(equity_chart)
+
+        # Portfolio summary
+        final_equity = equity_values[-1] if equity_values else capital
+        total_pnl = final_equity - capital
+        total_pnl_pct = (total_pnl / capital) * 100 if capital > 0 else 0.0
+
+        # Current signal
+        current_signal_str = "HOLD"
+        current_strength = 0.0
+        if all_signals:
+            last_sig = all_signals[-1]
+            current_signal_str = last_sig.signal.value
+            current_strength = last_sig.strength
+
+        # Format completed trades
+        trades = sim.get_trade_ledger()
+        formatted_trades = []
+        for t in trades:
+            formatted_trades.append({
+                "entry_time": _format_timestamp(str(t.get("entry_time", ""))),
+                "exit_time": _format_timestamp(str(t.get("timestamp", ""))),
+                "entry_price": f"${t.get('entry_price', 0):.4f}",
+                "exit_price": f"${t.get('exit_price', 0):.4f}",
+                "pnl": f"${t.get('pnl', 0):.2f}",
+                "pnl_pct": f"{t.get('pnl_pct', 0) * 100:.2f}%",
+                "pnl_positive": t.get("pnl", 0) > 0,
+            })
+
+        # Format open positions
+        positions = sim.get_positions()
+        current_price = float(df["close"].iloc[-1])
+        formatted_positions = []
+        for pos_asset, pos_data in positions.items():
+            unrealized_pnl = (current_price - pos_data["entry_price"]) * pos_data["shares"]
+            unrealized_pct = (
+                ((current_price / pos_data["entry_price"]) - 1.0) * 100
+                if pos_data["entry_price"] > 0
+                else 0.0
+            )
+            formatted_positions.append({
+                "asset": pos_asset,
+                "shares": f"{pos_data['shares']:.6f}",
+                "entry_price": f"${pos_data['entry_price']:.4f}",
+                "current_price": _format_price(current_price),
+                "unrealized_pnl": f"${unrealized_pnl:.2f}",
+                "unrealized_pct": f"{unrealized_pct:.2f}%",
+                "pnl_positive": unrealized_pnl >= 0,
+                "entry_time": _format_timestamp(str(pos_data.get("entry_time", ""))),
+            })
+
+        return templates.TemplateResponse("simulate.html", {
+            "request": request,
+            "error": None,
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+            "fee_presets": list(_get_fee_presets().keys()),
+            "result": {
+                "asset": asset,
+                "strategy": strategy,
+                "timeframe": timeframe,
+                "period": period,
+                "fee_preset": fee_preset,
+                "initial_capital": f"${capital:,.2f}",
+                "initial_capital_raw": capital,
+                "final_equity": f"${final_equity:,.2f}",
+                "total_pnl": f"${total_pnl:,.2f}",
+                "total_pnl_pct": f"{total_pnl_pct:.2f}%",
+                "total_trades": len(trades),
+                "total_bars": len(df),
+                "current_signal": current_signal_str,
+                "current_strength": f"{current_strength:.2f}",
+                "equity_chart_json": equity_chart_json,
+                "trades": formatted_trades,
+                "positions": formatted_positions,
+                "pnl_positive": total_pnl >= 0,
+            },
         })
 
     @app.get("/screener", response_class=HTMLResponse)
