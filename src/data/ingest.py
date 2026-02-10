@@ -39,18 +39,18 @@ def _detect_asset_class(symbol: str) -> str:
     return "equity"
 
 
-def _default_provider_for(asset_class: str) -> str:
-    """Look up the default provider name from config for *asset_class*."""
-    try:
-        providers_cfg: dict[str, Any] = get_config("providers")
-    except KeyError:
-        # Fallback when config section is absent.
-        return "kraken" if asset_class == "crypto" else "yahoo_daily"
+def _default_provider_for(asset_class: str, timeframe: str = "1d") -> str:
+    """Choose the best provider for *asset_class* and *timeframe*.
 
-    section = providers_cfg.get(asset_class, {})
-    if isinstance(section, dict):
-        return section.get("default", "kraken" if asset_class == "crypto" else "yahoo_daily")
-    return str(section)
+    For crypto daily/weekly data Yahoo Finance is used because it
+    provides full history.  Kraken's free OHLC endpoint only returns
+    the most recent ~720 candles, so it is used for intraday crypto only.
+    """
+    if asset_class == "crypto" and timeframe in ("1d", "1wk"):
+        return "yfinance"
+    if asset_class == "crypto":
+        return "kraken"
+    return "yfinance"
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ def ingest_asset(
     asset_class = _detect_asset_class(symbol)
 
     if provider_name is None:
-        provider_name = _default_provider_for(asset_class)
+        provider_name = _default_provider_for(asset_class, timeframe)
 
     logger.info(
         "Ingesting %s [%s] from %s to %s via %s",

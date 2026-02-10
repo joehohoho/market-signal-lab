@@ -13,11 +13,13 @@ from __future__ import annotations
 from data.providers.base import DataProvider
 from data.providers.kraken import KrakenProvider
 from data.providers.yahoo_daily import YahooDailyProvider
+from data.providers.yfinance_provider import YFinanceProvider
 
 # Registry mapping provider name -> class.
 _PROVIDER_REGISTRY: dict[str, type[DataProvider]] = {
     "kraken": KrakenProvider,
     "yahoo_daily": YahooDailyProvider,
+    "yfinance": YFinanceProvider,
 }
 
 
@@ -46,5 +48,6 @@ __all__ = [
     "DataProvider",
     "KrakenProvider",
     "YahooDailyProvider",
+    "YFinanceProvider",
     "get_provider",
 ]

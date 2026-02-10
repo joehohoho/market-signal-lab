@@ -24,6 +24,7 @@ dependencies = [
     "click>=8.1",
     "rich>=13.7",
     "tenacity>=8.2",
+    "yfinance>=0.2",
 ]
 
 [project.optional-dependencies]
