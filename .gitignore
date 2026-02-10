@@ -37,6 +37,8 @@ Thumbs.db
 data/*.duckdb
 data/*.duckdb.wal
 data/candles/
+data/scenarios/
+data/optimized/
 
 # Config (only the example is committed)
 config/config.yaml

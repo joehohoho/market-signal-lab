@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from backtest.optimizer import ParameterOptimizer
 from data.providers.yfinance_provider import YFinanceProvider
 from data.storage.parquet_store import ParquetStore
 from indicators.core import ema, sma
+from paper.simulator import PaperTradingSimulator
 from screener.scanner import Screener
 from signals.engine import SignalEngine
 from strategies import STRATEGY_REGISTRY, get_strategy
@@ -40,8 +42,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SRC_DIR = Path(__file__).resolve().parent.parent  # src/
+_PROJECT_ROOT = _SRC_DIR.parent
 _TEMPLATES_DIR = _SRC_DIR / "ui" / "templates"
 _STATIC_DIR = _SRC_DIR / "ui" / "static"
+_SCENARIOS_DIR = _PROJECT_ROOT / "data" / "scenarios"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -503,96 +507,129 @@ def create_app() -> FastAPI:
             "result": None,
         })
 
-    @app.get("/simulate", response_class=HTMLResponse)
-    async def simulate_page(request: Request):
-        """Render the simulation form page."""
-        return templates.TemplateResponse("simulate.html", {
-            "request": request,
-            "error": None,
-            "strategies": list(STRATEGY_REGISTRY.keys()),
-            "fee_presets": list(_get_fee_presets().keys()),
-            "result": None,
-        })
+    # ------------------------------------------------------------------
+    # Simulate — persistent paper-trading scenarios
+    # ------------------------------------------------------------------
 
-    @app.post("/simulate", response_class=HTMLResponse)
-    async def run_simulation(
-        request: Request,
-        asset: str = Form(...),
-        strategy: str = Form(...),
-        timeframe: str = Form(default="1d"),
-        capital: float = Form(default=10000.0),
-        fee_preset: str = Form(default="crypto_major"),
-    ):
-        """Analyse current market and show what the strategy recommends now."""
-        # Fetch enough recent data for indicators to warm up (~200 bars)
-        end_dt = datetime.now(tz=timezone.utc)
-        lookback = 400 if timeframe == "1d" else 800  # days
-        start_dt = end_dt - pd.Timedelta(days=lookback)
+    def _load_all_scenarios() -> list[dict[str, Any]]:
+        """Load all scenario JSON files from data/scenarios/."""
+        if not _SCENARIOS_DIR.exists():
+            return []
+        scenarios = []
+        for fp in sorted(_SCENARIOS_DIR.glob("*.json")):
+            try:
+                with open(fp) as f:
+                    scenarios.append(json.load(f))
+            except (json.JSONDecodeError, OSError):
+                continue
+        return scenarios
 
+    def _load_scenario(scenario_id: str) -> dict[str, Any] | None:
+        """Load a single scenario by ID."""
+        fp = _SCENARIOS_DIR / f"{scenario_id}.json"
+        if not fp.exists():
+            return None
         try:
-            provider = YFinanceProvider()
-            df = provider.fetch_ohlcv(asset, timeframe, start_dt, end_dt)
-            if not df.empty and df["timestamp"].dt.tz is not None:
-                df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
-        except Exception as exc:
-            return templates.TemplateResponse("simulate.html", {
-                "request": request,
-                "error": f"Failed to fetch live data for {asset}: {exc}",
-                "strategies": list(STRATEGY_REGISTRY.keys()),
-                "fee_presets": list(_get_fee_presets().keys()),
-                "result": None,
-            })
+            with open(fp) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _run_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+        """Fetch live data and run the paper trading simulation for a scenario.
+
+        Returns a dict with all the data needed for the detail template.
+        """
+        asset = scenario["asset"]
+        strategy_name = scenario["strategy"]
+        timeframe = scenario["timeframe"]
+        capital = float(scenario["capital"])
+        fee_preset = scenario["fee_preset"]
+        created_at = datetime.fromisoformat(scenario["created_at"])
+        expires_at = datetime.fromisoformat(scenario["expires_at"])
+
+        now = datetime.now(tz=timezone.utc)
+        is_expired = now >= expires_at.replace(tzinfo=timezone.utc)
+        end_dt = expires_at.replace(tzinfo=timezone.utc) if is_expired else now
+
+        days_elapsed = (end_dt - created_at.replace(tzinfo=timezone.utc)).days
+        days_total = int(scenario["duration_days"])
+        days_remaining = max(0, days_total - days_elapsed)
+
+        # Fetch live data with warmup
+        warmup_days = 90
+        start_dt = created_at.replace(tzinfo=timezone.utc) - timedelta(days=warmup_days)
+
+        provider = YFinanceProvider()
+        df = provider.fetch_ohlcv(asset, timeframe, start_dt, end_dt)
+        if not df.empty and df["timestamp"].dt.tz is not None:
+            df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
 
         if df.empty or len(df) < 2:
-            return templates.TemplateResponse("simulate.html", {
-                "request": request,
-                "error": f"No data available for {asset} ({timeframe}). Check the ticker symbol.",
-                "strategies": list(STRATEGY_REGISTRY.keys()),
-                "fee_presets": list(_get_fee_presets().keys()),
-                "result": None,
-            })
+            return {"error": f"No market data available for {asset}"}
 
-        # Get strategy + params (with optimized overlay)
-        try:
-            strat_obj = get_strategy(strategy)
-        except ValueError:
-            return templates.TemplateResponse("simulate.html", {
-                "request": request,
-                "error": f"Unknown strategy: {strategy}",
-                "strategies": list(STRATEGY_REGISTRY.keys()),
-                "fee_presets": list(_get_fee_presets().keys()),
-                "result": None,
-            })
-
+        # Get strategy + params
+        strat_obj = get_strategy(strategy_name)
         strat_cfg = _get_strategy_params()
-        params = strat_cfg.get(strategy, {}).get(timeframe, {})
-
-        optimized = ParameterOptimizer.load_optimized(strategy, asset, timeframe)
+        params = strat_cfg.get(strategy_name, {}).get(timeframe, {})
+        optimized = ParameterOptimizer.load_optimized(strategy_name, asset, timeframe)
         if optimized is not None:
             params = {**params, **optimized}
 
-        # Compute signals across all bars
+        # Compute signals for all bars
         prepared = df.set_index("timestamp") if "timestamp" in df.columns else df.copy()
         if not isinstance(prepared.index, pd.DatetimeIndex):
             prepared.index = pd.to_datetime(prepared.index)
+        all_signals = strat_obj.compute(prepared, asset, timeframe, params)
 
-        try:
-            all_signals = strat_obj.compute(prepared, asset, timeframe, params)
-        except Exception as exc:
-            return templates.TemplateResponse("simulate.html", {
-                "request": request,
-                "error": f"Strategy error: {exc}",
-                "strategies": list(STRATEGY_REGISTRY.keys()),
-                "fee_presets": list(_get_fee_presets().keys()),
-                "result": None,
-            })
+        # Find where simulation period starts (after warmup)
+        created_naive = pd.Timestamp(created_at).tz_localize(None)
+        sim_start_idx = 0
+        for idx_i in range(len(df)):
+            if df.iloc[idx_i]["timestamp"] >= created_naive:
+                sim_start_idx = idx_i
+                break
 
-        # Current market state
+        # Run paper trading simulator from sim_start_idx onward
+        sim = PaperTradingSimulator(
+            initial_capital=capital,
+            fee_preset=fee_preset,
+            position_size_pct=1.0,
+        )
+
+        equity_values: list[float] = []
+        equity_dates: list[Any] = []
+
+        for i in range(sim_start_idx, len(df)):
+            row = df.iloc[i]
+            candle = {
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row.get("volume", 0)),
+                "timestamp": str(row["timestamp"]),
+            }
+            step_signals: dict[str, Any] = {}
+            if i < len(all_signals):
+                step_signals = {asset: all_signals[i]}
+            sim.step(candle, step_signals)
+            equity = sim.get_portfolio_value({asset: float(row["close"])})
+            equity_values.append(equity)
+            equity_dates.append(row["timestamp"])
+
+        # Equity chart
+        equity_series = pd.Series(
+            equity_values, index=pd.to_datetime(equity_dates),
+        )
+        equity_chart = _build_equity_chart(equity_series)
+        equity_chart_json = json.dumps(equity_chart)
+
+        # Portfolio summary
         current_price = float(df["close"].iloc[-1])
-        prev_price = float(df["close"].iloc[-2]) if len(df) > 1 else current_price
-        price_change = current_price - prev_price
-        price_change_pct = (price_change / prev_price) * 100 if prev_price else 0.0
-        data_timestamp = str(df["timestamp"].iloc[-1])
+        final_equity = equity_values[-1] if equity_values else capital
+        total_pnl = final_equity - capital
+        total_pnl_pct = (total_pnl / capital) * 100 if capital > 0 else 0.0
 
         # Current signal
         current_signal_str = "HOLD"
@@ -604,85 +641,156 @@ def create_app() -> FastAPI:
             current_strength = last_sig.strength
             current_explanation = last_sig.explanation or ""
 
-        # Compute fee impact for recommended trade
-        from paper.simulator import _load_fee_preset, _effective_buy_price, _effective_sell_price
-
-        fees = _load_fee_preset(fee_preset)
-
-        # Recommended action based on current signal
-        action = None
-        if current_signal_str == "BUY":
-            buy_price = _effective_buy_price(current_price, fees)
-            shares = capital / buy_price
-            total_cost = shares * buy_price
-            action = {
-                "type": "BUY",
-                "shares": f"{shares:.6f}",
-                "price": _format_price(buy_price),
-                "total": f"${total_cost:,.2f}",
-                "note": f"Buy {shares:.6f} {asset} at {_format_price(buy_price)} (incl. fees/slippage)",
-            }
-        elif current_signal_str == "SELL":
-            sell_price = _effective_sell_price(current_price, fees)
-            shares = capital / current_price  # what you could hold
-            proceeds = shares * sell_price
-            action = {
-                "type": "SELL",
-                "shares": f"{shares:.6f}",
-                "price": _format_price(sell_price),
-                "total": f"${proceeds:,.2f}",
-                "note": f"Sell at {_format_price(sell_price)} (after fees/slippage)",
-            }
-        else:
-            action = {
-                "type": "HOLD",
-                "note": "Strategy says wait — no trade recommended right now.",
-            }
-
-        # Recent signal history (last 15 bars with non-HOLD signals highlighted)
-        recent_signals = []
-        start_idx = max(0, len(all_signals) - 15)
-        for i in range(start_idx, len(all_signals)):
-            sig = all_signals[i]
-            bar_ts = str(df.iloc[i]["timestamp"]) if i < len(df) else ""
-            bar_close = float(df.iloc[i]["close"]) if i < len(df) else 0
-            recent_signals.append({
-                "date": _format_timestamp(bar_ts),
-                "signal": sig.signal.value,
-                "strength": f"{sig.strength:.2f}",
-                "price": _format_price(bar_close),
+        # Format completed trades
+        trades = sim.get_trade_ledger()
+        formatted_trades = []
+        for t in trades:
+            formatted_trades.append({
+                "entry_time": _format_timestamp(str(t.get("entry_time", ""))),
+                "exit_time": _format_timestamp(str(t.get("timestamp", ""))),
+                "entry_price": f"${t.get('entry_price', 0):.4f}",
+                "exit_price": f"${t.get('exit_price', 0):.4f}",
+                "pnl": f"${t.get('pnl', 0):.2f}",
+                "pnl_pct": f"{t.get('pnl_pct', 0) * 100:.2f}%",
+                "pnl_positive": t.get("pnl", 0) > 0,
             })
 
-        # Build price chart for recent period (last 60 bars)
-        chart_df = df.tail(60).copy()
-        price_chart = _build_candlestick_chart(chart_df, asset, sma_periods=[20, 50])
-        price_chart_json = json.dumps(price_chart)
+        # Format open positions
+        positions = sim.get_positions()
+        formatted_positions = []
+        for pos_asset, pos_data in positions.items():
+            unrealized_pnl = (
+                (current_price - pos_data["entry_price"]) * pos_data["shares"]
+            )
+            unrealized_pct = (
+                ((current_price / pos_data["entry_price"]) - 1.0) * 100
+                if pos_data["entry_price"] > 0 else 0.0
+            )
+            formatted_positions.append({
+                "asset": pos_asset,
+                "shares": f"{pos_data['shares']:.6f}",
+                "entry_price": f"${pos_data['entry_price']:.4f}",
+                "current_price": _format_price(current_price),
+                "unrealized_pnl": f"${unrealized_pnl:.2f}",
+                "unrealized_pct": f"{unrealized_pct:.2f}%",
+                "pnl_positive": unrealized_pnl >= 0,
+                "entry_time": _format_timestamp(
+                    str(pos_data.get("entry_time", "")),
+                ),
+            })
+
+        return {
+            "scenario": scenario,
+            "is_expired": is_expired,
+            "days_elapsed": days_elapsed,
+            "days_remaining": days_remaining,
+            "days_total": days_total,
+            "current_price": _format_price(current_price),
+            "data_as_of": _format_timestamp(str(df["timestamp"].iloc[-1])),
+            "current_signal": current_signal_str,
+            "current_strength": f"{current_strength:.2f}",
+            "explanation": current_explanation,
+            "capital": f"${capital:,.2f}",
+            "final_equity": f"${final_equity:,.2f}",
+            "total_pnl": f"${total_pnl:,.2f}",
+            "total_pnl_pct": f"{total_pnl_pct:.2f}%",
+            "pnl_positive": total_pnl >= 0,
+            "total_trades": len(trades),
+            "equity_chart_json": equity_chart_json,
+            "trades": formatted_trades,
+            "positions": formatted_positions,
+        }
+
+    @app.get("/simulate", response_class=HTMLResponse)
+    async def simulate_page(request: Request):
+        """List all scenarios with a form to create new ones."""
+        scenarios = _load_all_scenarios()
+
+        now = datetime.now(tz=timezone.utc)
+        formatted = []
+        for sc in scenarios:
+            expires = datetime.fromisoformat(sc["expires_at"])
+            is_expired = now >= expires.replace(tzinfo=timezone.utc)
+            created = datetime.fromisoformat(sc["created_at"])
+            days_total = int(sc["duration_days"])
+            days_elapsed = (now - created.replace(tzinfo=timezone.utc)).days
+            days_remaining = max(0, days_total - days_elapsed)
+            formatted.append({
+                **sc,
+                "is_expired": is_expired,
+                "days_remaining": days_remaining,
+                "created_fmt": _format_timestamp(sc["created_at"]),
+                "strategy_fmt": sc["strategy"].replace("_", " ").title(),
+                "capital_fmt": f"${float(sc['capital']):,.0f}",
+            })
 
         return templates.TemplateResponse("simulate.html", {
             "request": request,
             "error": None,
+            "scenarios": formatted,
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
-            "result": {
-                "asset": asset,
-                "strategy": strategy,
-                "timeframe": timeframe,
-                "fee_preset": fee_preset,
-                "capital_raw": capital,
-                "capital": f"${capital:,.2f}",
-                "current_price": _format_price(current_price),
-                "price_change": f"${price_change:+,.2f}",
-                "price_change_pct": f"{price_change_pct:+.2f}%",
-                "price_up": price_change >= 0,
-                "data_as_of": _format_timestamp(data_timestamp),
-                "current_signal": current_signal_str,
-                "current_strength": f"{current_strength:.2f}",
-                "explanation": current_explanation,
-                "action": action,
-                "recent_signals": recent_signals,
-                "price_chart_json": price_chart_json,
-            },
         })
+
+    @app.post("/simulate/create", response_class=RedirectResponse)
+    async def create_scenario(
+        asset: str = Form(...),
+        strategy: str = Form(...),
+        timeframe: str = Form(default="1d"),
+        capital: float = Form(default=10000.0),
+        duration: int = Form(default=30),
+        fee_preset: str = Form(default="crypto_major"),
+    ):
+        """Create a new paper trading scenario and redirect to it."""
+        scenario_id = uuid.uuid4().hex[:8]
+        now = datetime.now(tz=timezone.utc)
+        scenario = {
+            "id": scenario_id,
+            "asset": asset.upper().strip(),
+            "strategy": strategy,
+            "timeframe": timeframe,
+            "capital": capital,
+            "fee_preset": fee_preset,
+            "duration_days": duration,
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=duration)).isoformat(),
+        }
+
+        _SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_SCENARIOS_DIR / f"{scenario_id}.json", "w") as f:
+            json.dump(scenario, f, indent=2)
+
+        return RedirectResponse(
+            url=f"/simulate/{scenario_id}", status_code=303,
+        )
+
+    @app.get("/simulate/{scenario_id}", response_class=HTMLResponse)
+    async def scenario_detail(request: Request, scenario_id: str):
+        """View a scenario with live simulation results."""
+        scenario = _load_scenario(scenario_id)
+        if scenario is None:
+            return RedirectResponse(url="/simulate", status_code=302)
+
+        try:
+            result = _run_scenario(scenario)
+        except Exception as exc:
+            logger.exception("Error running scenario %s", scenario_id)
+            result = {"error": str(exc)}
+
+        return templates.TemplateResponse("simulate_detail.html", {
+            "request": request,
+            "error": result.get("error"),
+            "result": result if "error" not in result else None,
+            "scenario": scenario,
+        })
+
+    @app.post("/simulate/{scenario_id}/delete", response_class=RedirectResponse)
+    async def delete_scenario(scenario_id: str):
+        """Delete a scenario and redirect to the list."""
+        fp = _SCENARIOS_DIR / f"{scenario_id}.json"
+        if fp.exists():
+            fp.unlink()
+        return RedirectResponse(url="/simulate", status_code=303)
 
     @app.get("/screener", response_class=HTMLResponse)
     async def screener_page(

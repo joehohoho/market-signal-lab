@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+
+{% set active_page = "simulate" %}
+
+{% block title %}{{ scenario.asset }} Scenario - Market Signal Lab{% endblock %}
+
+{% block content %}
+<div class="fade-in">
+    <!-- Back link + header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <a href="/simulate" class="text-sm text-blue-400 hover:text-blue-300 mb-2 inline-block">← All Scenarios</a>
+            <h1 class="text-2xl font-bold text-slate-100">
+                {{ scenario.asset }} — {{ scenario.strategy|replace('_', ' ')|title }}
+            </h1>
+        </div>
+        <div class="flex items-center space-x-3">
+            {% if result %}
+            <span class="text-xs px-2 py-0.5 rounded-full font-medium
+                {% if result.is_expired %}bg-slate-600 text-slate-300
+                {% else %}bg-green-900/50 text-green-400 border border-green-700{% endif %}">
+                {% if result.is_expired %}Expired{% else %}Active — {{ result.days_remaining }}d left{% endif %}
+            </span>
+            {% endif %}
+            <form action="/simulate/{{ scenario.id }}/delete" method="post"
+                  onsubmit="return confirm('Delete this scenario?')">
+                <button type="submit"
+                        class="text-xs text-red-400 hover:text-red-300 px-3 py-1 rounded border border-red-800 hover:border-red-600 transition-colors">
+                    Delete
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Scenario info bar -->
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 mb-6">
+        <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+            <div><span class="text-slate-400">Capital:</span> <span class="font-mono text-slate-200">${{ scenario.capital|int|default(scenario.capital) }}</span></div>
+            <div><span class="text-slate-400">Timeframe:</span> <span class="text-slate-200">{{ scenario.timeframe }}</span></div>
+            <div><span class="text-slate-400">Duration:</span> <span class="text-slate-200">{{ scenario.duration_days }} days</span></div>
+            <div><span class="text-slate-400">Fee Preset:</span> <span class="text-slate-200">{{ scenario.fee_preset|replace('_', ' ')|title }}</span></div>
+            <div><span class="text-slate-400">Started:</span> <span class="text-slate-200">{{ scenario.created_at[:10] }}</span></div>
+            <div><span class="text-slate-400">Ends:</span> <span class="text-slate-200">{{ scenario.expires_at[:10] }}</span></div>
+        </div>
+    </div>
+
+    <!-- Error -->
+    {% if error %}
+    <div class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-6">
+        <p class="text-sm text-red-400">{{ error }}</p>
+    </div>
+    {% endif %}
+
+    {% if result %}
+    <div class="space-y-6">
+
+        <!-- Current Signal + Portfolio -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Current Signal -->
+            <div class="bg-slate-800 rounded-lg border border-slate-700 p-6">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Current Signal</h2>
+                    <span class="text-xs text-slate-500">as of {{ result.data_as_of }}</span>
+                </div>
+                <div class="flex items-baseline space-x-3">
+                    <span class="text-3xl font-bold font-mono
+                        {% if result.current_signal == 'BUY' %}text-green-400
+                        {% elif result.current_signal == 'SELL' %}text-red-400
+                        {% else %}text-slate-400{% endif %}">
+                        {{ result.current_signal }}
+                    </span>
+                    <span class="text-sm text-slate-400">
+                        Strength: <span class="font-mono text-slate-200">{{ result.current_strength }}</span>
+                    </span>
+                </div>
+                <div class="mt-2 text-sm text-slate-400">
+                    {{ scenario.asset }} at {{ result.current_price }}
+                </div>
+                {% if result.explanation %}
+                <p class="text-xs text-slate-500 mt-2">{{ result.explanation }}</p>
+                {% endif %}
+            </div>
+
+            <!-- Portfolio Summary -->
+            <div class="bg-slate-800 rounded-lg border border-slate-700 p-6">
+                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Portfolio</h2>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <p class="text-xs text-slate-400 uppercase">Starting</p>
+                        <p class="text-lg font-mono font-bold text-slate-200">{{ result.capital }}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-400 uppercase">Current Value</p>
+                        <p class="text-lg font-mono font-bold text-slate-200">{{ result.final_equity }}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-400 uppercase">P&L</p>
+                        <p class="text-lg font-mono font-bold
+                            {% if result.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
+                            {{ result.total_pnl }} ({{ result.total_pnl_pct }})
+                        </p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-400 uppercase">Trades</p>
+                        <p class="text-lg font-mono font-bold text-slate-200">{{ result.total_trades }}</p>
+                    </div>
+                </div>
+                <div class="mt-3 text-xs text-slate-500">
+                    Day {{ result.days_elapsed }} of {{ result.days_total }}
+                    {% if result.is_expired %} — Test complete{% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Equity Curve -->
+        <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+            <div id="equity-chart" class="w-full" style="height: 350px;"></div>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    renderChart('equity-chart', {{ result.equity_chart_json|safe }});
+                });
+            </script>
+        </div>
+
+        <!-- Open Positions -->
+        {% if result.positions %}
+        <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-700">
+                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">
+                    Open Positions ({{ result.positions|length }})
+                </h2>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="bg-slate-700/30 text-xs text-slate-400 uppercase tracking-wider">
+                            <th class="px-3 py-2 font-medium">Asset</th>
+                            <th class="px-3 py-2 font-medium">Shares</th>
+                            <th class="px-3 py-2 font-medium">Entry Price</th>
+                            <th class="px-3 py-2 font-medium">Current Price</th>
+                            <th class="px-3 py-2 font-medium">Unrealized P&L</th>
+                            <th class="px-3 py-2 font-medium">P&L %</th>
+                            <th class="px-3 py-2 font-medium">Entry Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pos in result.positions %}
+                        <tr class="border-t border-slate-700/50 text-sm">
+                            <td class="px-3 py-2 text-slate-200 font-medium">{{ pos.asset }}</td>
+                            <td class="px-3 py-2 font-mono text-slate-300">{{ pos.shares }}</td>
+                            <td class="px-3 py-2 font-mono text-slate-300">{{ pos.entry_price }}</td>
+                            <td class="px-3 py-2 font-mono text-slate-300">{{ pos.current_price }}</td>
+                            <td class="px-3 py-2 font-mono font-medium
+                                {% if pos.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
+                                {{ pos.unrealized_pnl }}
+                            </td>
+                            <td class="px-3 py-2 font-mono text-xs
+                                {% if pos.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
+                                {{ pos.unrealized_pct }}
+                            </td>
+                            <td class="px-3 py-2 text-xs text-slate-400">{{ pos.entry_time }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Completed Trades -->
+        {% if result.trades %}
+        <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-700">
+                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">
+                    Completed Trades ({{ result.trades|length }})
+                </h2>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="bg-slate-700/30 text-xs text-slate-400 uppercase tracking-wider">
+                            <th class="px-3 py-2 font-medium">#</th>
+                            <th class="px-3 py-2 font-medium">Entry</th>
+                            <th class="px-3 py-2 font-medium">Exit</th>
+                            <th class="px-3 py-2 font-medium">Entry Price</th>
+                            <th class="px-3 py-2 font-medium">Exit Price</th>
+                            <th class="px-3 py-2 font-medium">P&L</th>
+                            <th class="px-3 py-2 font-medium">P&L %</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for trade in result.trades %}
+                        <tr class="border-t border-slate-700/50 text-sm">
+                            <td class="px-3 py-2 text-slate-500">{{ loop.index }}</td>
+                            <td class="px-3 py-2 text-slate-300 text-xs">{{ trade.entry_time }}</td>
+                            <td class="px-3 py-2 text-slate-300 text-xs">{{ trade.exit_time }}</td>
+                            <td class="px-3 py-2 font-mono text-slate-200">{{ trade.entry_price }}</td>
+                            <td class="px-3 py-2 font-mono text-slate-200">{{ trade.exit_price }}</td>
+                            <td class="px-3 py-2 font-mono font-medium
+                                {% if trade.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
+                                {{ trade.pnl }}
+                            </td>
+                            <td class="px-3 py-2 font-mono text-xs
+                                {% if trade.pnl_positive %}text-green-400{% else %}text-red-400{% endif %}">
+                                {{ trade.pnl_pct }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- No trades yet -->
+        {% if not result.trades and not result.positions %}
+        <div class="bg-slate-800/50 rounded-lg border border-slate-700 p-6 text-center">
+            <p class="text-slate-400">No trades yet. The strategy is waiting for the right signal to enter a position.</p>
+        </div>
+        {% endif %}
+
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
