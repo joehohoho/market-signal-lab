@@ -495,6 +495,113 @@ def train_ml(asset: str, tf: str, start: str, end: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# optimize
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--asset", required=True, help="Asset symbol (e.g. BTC-USD).")
+@click.option("--strategy", required=True, help="Strategy name (e.g. sma_crossover).")
+@click.option("--tf", required=True, help="Timeframe (e.g. 1d).")
+@click.option("--start", required=True, help="Start date YYYY-MM-DD.")
+@click.option("--end", required=True, help="End date YYYY-MM-DD.")
+@click.option("--top", default=5, show_default=True, help="Number of top results to show.")
+@click.option("--fee-preset", default=None, help="Fee preset (default: crypto_major).")
+def optimize(
+    asset: str,
+    strategy: str,
+    tf: str,
+    start: str,
+    end: str,
+    top: int,
+    fee_preset: Optional[str],
+) -> None:
+    """Grid-search strategy parameters and rank by Sharpe ratio."""
+    from data.storage.parquet_store import ParquetStore  # lazy imports
+    from backtest.optimizer import ParameterOptimizer
+
+    try:
+        start_dt = _parse_date(start)
+        end_dt = _parse_date(end)
+    except ValueError:
+        _error("Dates must be in YYYY-MM-DD format.")
+
+    resolved_fee_preset = fee_preset or "crypto_major"
+
+    console.print(
+        f"[bold cyan]Optimizing[/bold cyan] {strategy} on {asset}/{tf} | "
+        f"{start} -> {end} | fee_preset={resolved_fee_preset}"
+    )
+
+    # Load data
+    cfg = get_config()
+    store = ParquetStore(cfg.get("storage", {}).get("parquet_dir", "data/candles"))
+    df = store.load(asset, tf, start=start_dt, end=end_dt)
+
+    if df.empty:
+        _error(
+            f"No data for {asset}/{tf} in [{start}, {end}]. "
+            "Run `msl ingest` first."
+        )
+
+    console.print(f"  Loaded {len(df):,} candles.")
+
+    # Run optimizer
+    try:
+        optimizer = ParameterOptimizer(
+            strategy_name=strategy,
+            asset=asset,
+            timeframe=tf,
+            df=df,
+            fee_preset=resolved_fee_preset,
+            top_n=top,
+        )
+        with console.status("[bold green]Running parameter grid search..."):
+            results = optimizer.run()
+    except Exception as exc:
+        logger.exception("optimize failed")
+        _error(str(exc))
+
+    if not results:
+        console.print("[yellow]No viable parameter sets found (all had < 3 trades).[/yellow]")
+        return
+
+    # Build rich table
+    table = Table(title=f"Top {len(results)} Parameter Sets", show_lines=True)
+    table.add_column("Rank", justify="right", style="dim")
+    table.add_column("Params")
+    table.add_column("Sharpe", justify="right")
+    table.add_column("CAGR", justify="right")
+    table.add_column("MaxDD", justify="right")
+    table.add_column("WinRate", justify="right")
+    table.add_column("Trades", justify="right")
+
+    for rank, r in enumerate(results, 1):
+        params_str = ", ".join(f"{k}={v}" for k, v in r["params"].items())
+        cagr_pct = r["cagr"] * 100
+        dd_pct = r["max_drawdown"] * 100
+        wr_pct = r["win_rate"] * 100
+
+        table.add_row(
+            str(rank),
+            params_str,
+            f"{r['sharpe']:.2f}",
+            f"{cagr_pct:+.2f}%",
+            f"{dd_pct:.2f}%",
+            f"{wr_pct:.1f}%",
+            str(r["total_trades"]),
+        )
+
+    console.print(table)
+
+    # Save best params
+    saved_path = optimizer.save_best()
+    if saved_path:
+        console.print(
+            f"[green]Best params saved to:[/green] {saved_path}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Entry point for direct execution
 # ---------------------------------------------------------------------------
 

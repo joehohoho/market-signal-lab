@@ -127,6 +127,16 @@ class SignalEngine:
                 for strategy_name, tf_params_map in strategies_config.items():
                     params: dict[str, Any] = tf_params_map.get(tf, {})
 
+                    # Prefer optimized params when available (lazy import
+                    # to avoid circular imports).
+                    from backtest.optimizer import ParameterOptimizer
+
+                    optimized = ParameterOptimizer.load_optimized(
+                        strategy_name, asset, tf,
+                    )
+                    if optimized is not None:
+                        params = {**params, **optimized}
+
                     try:
                         strategy = get_strategy(strategy_name)
                     except ValueError:
