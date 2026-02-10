@@ -696,11 +696,13 @@ def create_app() -> FastAPI:
             prepared.index = pd.to_datetime(prepared.index)
         all_signals = strat_obj.compute(prepared, asset, timeframe, params)
 
-        # Find where simulation period starts (after warmup)
-        created_naive = pd.Timestamp(created_at).tz_localize(None)
+        # Find where simulation period starts (after warmup).
+        # Use midnight on the creation date so daily candles (timestamped at
+        # midnight) aren't skipped because of the intra-day creation time.
+        created_date = pd.Timestamp(created_at.date())
         sim_start_idx = 0
         for idx_i in range(len(df)):
-            if df.iloc[idx_i]["timestamp"] >= created_naive:
+            if df.iloc[idx_i]["timestamp"] >= created_date:
                 sim_start_idx = idx_i
                 break
 
