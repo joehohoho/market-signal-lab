@@ -68,25 +68,6 @@
                 </select>
             </div>
             <div>
-                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">
-                    Simulation Period
-                    <span class="group/tip relative inline-block cursor-help ml-1">
-                        <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-slate-600 text-[10px] text-slate-400">?</span>
-                        <span class="invisible group-hover/tip:visible absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 text-xs text-slate-200 bg-slate-900 rounded shadow-lg w-48 text-center normal-case z-10">
-                            How far back in history to simulate. The strategy will trade as if it were running live during this period.
-                        </span>
-                    </span>
-                </label>
-                <select name="period"
-                        class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500">
-                    <option value="30d" {% if result and result.period == '30d' %}selected{% endif %}>Last 30 Days</option>
-                    <option value="90d" {% if result and result.period == '90d' %}selected{% endif %}>Last 90 Days</option>
-                    <option value="6m" {% if result and result.period == '6m' %}selected{% endif %}>Last 6 Months</option>
-                    <option value="1y" {% if result and result.period == '1y' %}selected{% endif %}>Last 1 Year</option>
-                    <option value="all" {% if result and result.period == 'all' %}selected{% endif %}>All Available</option>
-                </select>
-            </div>
-            <div>
                 <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Fee Preset</label>
                 <select name="fee_preset"
                         class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500">

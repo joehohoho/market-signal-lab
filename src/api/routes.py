@@ -522,18 +522,12 @@ def create_app() -> FastAPI:
         strategy: str = Form(...),
         timeframe: str = Form(default="1d"),
         capital: float = Form(default=10000.0),
-        period: str = Form(default="1y"),
         fee_preset: str = Form(default="crypto_major"),
     ):
         """Run a paper trading simulation with live market data."""
-        # Determine how far back to fetch
-        period_days = {"30d": 30, "90d": 90, "6m": 180, "1y": 365, "all": 3650}
-        days = period_days.get(period, 365)
-
-        # Add extra warmup bars for strategy indicators (e.g. SMA needs history)
-        warmup_days = 60
+        # Fetch all available history up to right now
         end_dt = datetime.now(tz=timezone.utc)
-        start_dt = end_dt - pd.Timedelta(days=days + warmup_days)
+        start_dt = end_dt - pd.Timedelta(days=3650)  # up to 10 years
 
         # Fetch live data from yfinance
         try:
@@ -595,15 +589,6 @@ def create_app() -> FastAPI:
                 "result": None,
             })
 
-        # Determine where the actual simulation period starts (after warmup)
-        sim_cutoff = end_dt - pd.Timedelta(days=days)
-        sim_cutoff_naive = pd.Timestamp(sim_cutoff).tz_localize(None)
-        sim_start_idx = 0
-        for idx_i in range(len(df)):
-            if df.iloc[idx_i]["timestamp"] >= sim_cutoff_naive:
-                sim_start_idx = idx_i
-                break
-
         # Run paper trading simulation across all bars
         sim = PaperTradingSimulator(
             initial_capital=capital,
@@ -631,13 +616,9 @@ def create_app() -> FastAPI:
 
             sim.step(candle, step_signals)
 
-            # Only track equity for the actual simulation period
-            if i >= sim_start_idx:
-                equity = sim.get_portfolio_value({asset: float(row["close"])})
-                equity_values.append(equity)
-                equity_dates.append(row["timestamp"])
-
-        sim_bars = len(df) - sim_start_idx
+            equity = sim.get_portfolio_value({asset: float(row["close"])})
+            equity_values.append(equity)
+            equity_dates.append(row["timestamp"])
 
         # Build equity curve chart
         equity_series = pd.Series(equity_values, index=pd.to_datetime(equity_dates))
@@ -702,7 +683,6 @@ def create_app() -> FastAPI:
                 "asset": asset,
                 "strategy": strategy,
                 "timeframe": timeframe,
-                "period": period,
                 "fee_preset": fee_preset,
                 "initial_capital": f"${capital:,.2f}",
                 "initial_capital_raw": capital,
@@ -710,7 +690,7 @@ def create_app() -> FastAPI:
                 "total_pnl": f"${total_pnl:,.2f}",
                 "total_pnl_pct": f"{total_pnl_pct:.2f}%",
                 "total_trades": len(trades),
-                "total_bars": sim_bars,
+                "total_bars": len(df),
                 "data_as_of": _format_timestamp(str(df["timestamp"].iloc[-1])),
                 "current_signal": current_signal_str,
                 "current_strength": f"{current_strength:.2f}",
