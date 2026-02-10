@@ -48,8 +48,10 @@
                 <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Timeframe</label>
                 <select name="timeframe"
                         class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500">
-                    <option value="1d" {% if result and result.timeframe == '1d' %}selected{% endif %}>1 Day</option>
                     <option value="15m" {% if result and result.timeframe == '15m' %}selected{% endif %}>15 Min</option>
+                    <option value="1h" {% if result and result.timeframe == '1h' %}selected{% endif %}>1 Hour</option>
+                    <option value="4h" {% if result and result.timeframe == '4h' %}selected{% endif %}>4 Hours</option>
+                    <option value="1d" {% if result and result.timeframe == '1d' %}selected{% endif %}>1 Day</option>
                 </select>
             </div>
             <div>
