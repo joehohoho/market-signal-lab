@@ -145,6 +145,7 @@ class BacktestEngine:
         params: dict[str, Any],
         asset: str = "UNKNOWN",
         timeframe: str = "1d",
+        ml_filter: bool = False,
     ) -> BacktestResult:
         """Execute a full backtest.
 
@@ -172,6 +173,47 @@ class BacktestEngine:
         all_bar_signals: list[SignalResult] = strategy.compute(
             prepared_df, asset, timeframe, params,
         )
+
+        # Optionally filter signals through ML model
+        if ml_filter:
+            try:
+                from ml.scorer import MLScorer
+                from ml.features import build_features
+
+                scorer = MLScorer()
+                if scorer.load_model(asset, timeframe):
+                    feat_df = build_features(df, timeframe)
+                    if not feat_df.empty:
+                        meta_cols = {"timestamp", "close"}
+                        feature_cols = [c for c in feat_df.columns if c not in meta_cols]
+
+                        for i in range(len(all_bar_signals)):
+                            sig = all_bar_signals[i]
+                            if sig.signal != Signal.BUY:
+                                continue
+                            # Find the matching feature row for this bar
+                            if i < len(feat_df):
+                                X = feat_df[feature_cols].iloc[[i]]
+                                try:
+                                    prob = scorer._model.predict_proba(X)
+                                    if float(prob[0]) < 0.55:
+                                        # Replace BUY with HOLD
+                                        all_bar_signals[i] = SignalResult(
+                                            signal=Signal.HOLD,
+                                            strength=0.0,
+                                            strategy_name=sig.strategy_name,
+                                            asset=sig.asset,
+                                            timeframe=sig.timeframe,
+                                            timestamp=sig.timestamp,
+                                            explanation=sig.explanation,
+                                        )
+                                except Exception:
+                                    pass
+                    logger.info("ML filter applied to backtest signals")
+                else:
+                    logger.warning("ML filter requested but no model found for %s/%s", asset, timeframe)
+            except ImportError:
+                logger.warning("ML filter requested but scikit-learn not available")
 
         # Pre-compute ATR if needed for stop-loss
         atr_series: pd.Series | None = None

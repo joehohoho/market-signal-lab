@@ -114,6 +114,13 @@ def _signal_color(signal_str: str) -> str:
     return "text-gray-400"
 
 
+def _has_ml_model(asset: str, timeframe: str) -> bool:
+    """Check whether a trained ML model exists for this asset/timeframe."""
+    safe_asset = asset.replace("/", "-").replace("\\", "-")
+    model_path = _PROJECT_ROOT / "models" / f"{safe_asset}_{timeframe}.joblib"
+    return model_path.exists()
+
+
 def _build_candlestick_chart(
     df: pd.DataFrame, symbol: str, sma_periods: list[int] | None = None,
 ) -> dict[str, Any]:
@@ -394,8 +401,11 @@ def create_app() -> FastAPI:
         start_date: str = Form(default=""),
         end_date: str = Form(default=""),
         fee_preset: str = Form(default="crypto_major"),
+        ml_filter: str = Form(default=""),
     ):
         """Run a backtest and return the results page."""
+        use_ml = ml_filter == "on"
+
         store = _get_store()
         df = store.load(asset, timeframe)
 
@@ -406,6 +416,10 @@ def create_app() -> FastAPI:
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
                 "result": None,
+                "has_ml_model": _has_ml_model(asset, timeframe),
+                "ml_filter_on": False,
+                "ml_result": None,
+                "ml_trained": None,
             })
 
         # Parse dates
@@ -437,13 +451,17 @@ def create_app() -> FastAPI:
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
                 "result": None,
+                "has_ml_model": _has_ml_model(asset, timeframe),
+                "ml_filter_on": False,
+                "ml_result": None,
+                "ml_trained": None,
             })
 
         # Get strategy params
         strat_cfg = _get_strategy_params()
         params = strat_cfg.get(strategy, {}).get(timeframe, {})
 
-        # Run backtest
+        # Run backtest (without ML filter for baseline)
         strat_obj = get_strategy(strategy)
         engine = BacktestEngine(
             initial_capital=10_000.0,
@@ -452,6 +470,26 @@ def create_app() -> FastAPI:
         result: BacktestResult = engine.run(
             df, strat_obj, params, asset=asset, timeframe=timeframe,
         )
+
+        # If ML filter requested, run a second backtest with it
+        ml_result_data = None
+        if use_ml:
+            ml_bt: BacktestResult = engine.run(
+                df, strat_obj, params, asset=asset, timeframe=timeframe,
+                ml_filter=True,
+            )
+            ml_equity_chart = _build_equity_chart(ml_bt.equity_curve)
+            ml_result_data = {
+                "cagr": f"{ml_bt.cagr * 100:.2f}%",
+                "sharpe": f"{ml_bt.sharpe:.2f}",
+                "max_drawdown": f"{ml_bt.max_drawdown * 100:.2f}%",
+                "win_rate": f"{ml_bt.win_rate * 100:.1f}%",
+                "profit_factor": f"{ml_bt.profit_factor:.2f}" if ml_bt.profit_factor != float("inf") else "Inf",
+                "total_trades": ml_bt.total_trades,
+                "final_equity": f"${ml_bt.final_equity:,.2f}",
+                "equity_chart_json": json.dumps(ml_equity_chart),
+                "trades_blocked": result.total_trades - ml_bt.total_trades,
+            }
 
         # Build equity chart
         equity_chart = _build_equity_chart(result.equity_curve)
@@ -477,10 +515,15 @@ def create_app() -> FastAPI:
             "error": None,
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
+            "has_ml_model": _has_ml_model(asset, timeframe),
+            "ml_filter_on": use_ml,
+            "ml_result": ml_result_data,
+            "ml_trained": None,
             "result": {
                 "asset": asset,
                 "strategy": strategy,
                 "timeframe": timeframe,
+                "fee_preset": fee_preset,
                 "cagr": f"{result.cagr * 100:.2f}%",
                 "sharpe": f"{result.sharpe:.2f}",
                 "max_drawdown": f"{result.max_drawdown * 100:.2f}%",
@@ -496,6 +539,73 @@ def create_app() -> FastAPI:
             },
         })
 
+    @app.post("/backtest/train-ml", response_class=HTMLResponse)
+    async def train_ml_model(
+        request: Request,
+        asset: str = Form(...),
+        timeframe: str = Form(default="1d"),
+    ):
+        """Train an ML model for the given asset/timeframe."""
+        store = _get_store()
+        df = store.load(asset, timeframe)
+
+        if df.empty or len(df) < 100:
+            return templates.TemplateResponse("backtest.html", {
+                "request": request,
+                "error": f"Need at least 100 bars to train ML. {asset}/{timeframe} has {len(df)}.",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+                "has_ml_model": False,
+                "ml_filter_on": False,
+                "ml_result": None,
+                "ml_trained": None,
+            })
+
+        try:
+            from ml.models import train_and_validate
+
+            ml_result = train_and_validate(df, timeframe=timeframe)
+
+            # Save the model
+            models_dir = _PROJECT_ROOT / "models"
+            models_dir.mkdir(parents=True, exist_ok=True)
+            safe_asset = asset.replace("/", "-").replace("\\", "-")
+            model_path = models_dir / f"{safe_asset}_{timeframe}.joblib"
+            ml_result.model.save(model_path)
+
+            train_info = {
+                "asset": asset,
+                "timeframe": timeframe,
+                "auc_scores": [f"{s:.3f}" for s in ml_result.window_metrics.get("main_auc", [])],
+                "stable": ml_result.is_stable,
+                "avg_auc": f"{sum(ml_result.window_metrics.get('main_auc', [0])) / max(len(ml_result.window_metrics.get('main_auc', [1])), 1):.3f}",
+            }
+        except Exception as exc:
+            return templates.TemplateResponse("backtest.html", {
+                "request": request,
+                "error": f"ML training failed: {exc}",
+                "strategies": list(STRATEGY_REGISTRY.keys()),
+                "fee_presets": list(_get_fee_presets().keys()),
+                "result": None,
+                "has_ml_model": _has_ml_model(asset, timeframe),
+                "ml_filter_on": False,
+                "ml_result": None,
+                "ml_trained": None,
+            })
+
+        return templates.TemplateResponse("backtest.html", {
+            "request": request,
+            "error": None,
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+            "fee_presets": list(_get_fee_presets().keys()),
+            "result": None,
+            "has_ml_model": True,
+            "ml_filter_on": False,
+            "ml_result": None,
+            "ml_trained": train_info,
+        })
+
     @app.get("/backtest", response_class=HTMLResponse)
     async def backtest_page(request: Request):
         """Render the backtest form page."""
@@ -505,6 +615,10 @@ def create_app() -> FastAPI:
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
             "result": None,
+            "has_ml_model": False,
+            "ml_filter_on": False,
+            "ml_result": None,
+            "ml_trained": None,
         })
 
     # ------------------------------------------------------------------

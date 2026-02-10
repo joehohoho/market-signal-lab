@@ -78,12 +78,58 @@
                         class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-6 py-2 rounded transition-colors">
                     Run Backtest
                 </button>
+                {% if has_ml_model %}
+                <label class="flex items-center space-x-2 text-sm text-slate-300 cursor-pointer">
+                    <input type="checkbox" name="ml_filter" class="rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500"
+                           {% if ml_filter_on %}checked{% endif %}>
+                    <span>ML Filter</span>
+                    <span class="group/tip relative inline-block cursor-help">
+                        <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-slate-600 text-[10px] text-slate-400">?</span>
+                        <span class="invisible group-hover/tip:visible absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 text-xs text-slate-200 bg-slate-900 rounded shadow-lg w-56 text-center normal-case z-10">
+                            Uses a trained ML model to block low-confidence BUY signals. Run a baseline + ML-filtered comparison.
+                        </span>
+                    </span>
+                </label>
+                {% endif %}
                 <span id="loading-indicator" class="htmx-indicator text-sm text-slate-400">
                     Running backtest...
                 </span>
             </div>
         </form>
     </div>
+
+    <!-- ML Train Section -->
+    {% if result and not has_ml_model %}
+    <div class="bg-slate-800/50 rounded-lg border border-slate-700 p-4 mb-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <p class="text-sm text-slate-300 font-medium">Train ML Model</p>
+                <p class="text-xs text-slate-500 mt-0.5">Train a gradient-boosted model on this asset's history to filter low-confidence trades.</p>
+            </div>
+            <form action="/backtest/train-ml" method="post">
+                <input type="hidden" name="asset" value="{{ result.asset }}">
+                <input type="hidden" name="timeframe" value="{{ result.timeframe }}">
+                <button type="submit"
+                        class="bg-purple-600 hover:bg-purple-700 text-white text-xs font-medium px-4 py-1.5 rounded transition-colors">
+                    Train Model
+                </button>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ML Training Result -->
+    {% if ml_trained %}
+    <div class="bg-purple-900/20 border border-purple-700 rounded-lg p-4 mb-6">
+        <p class="text-sm font-medium text-purple-300">ML Model Trained — {{ ml_trained.asset }} / {{ ml_trained.timeframe }}</p>
+        <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-slate-400">
+            <span>Avg AUC: <span class="font-mono text-slate-200">{{ ml_trained.avg_auc }}</span></span>
+            <span>Stable: <span class="font-mono {% if ml_trained.stable %}text-green-400{% else %}text-yellow-400{% endif %}">{{ 'Yes' if ml_trained.stable else 'No' }}</span></span>
+            <span>Window AUCs: <span class="font-mono text-slate-300">{{ ml_trained.auc_scores|join(', ') }}</span></span>
+        </div>
+        <p class="text-xs text-slate-500 mt-1">Re-run a backtest with "ML Filter" checked to see the comparison.</p>
+    </div>
+    {% endif %}
 
     <!-- Error -->
     {% if error %}
@@ -217,6 +263,56 @@
                     });
                 </script>
             </div>
+
+            <!-- ML Comparison -->
+            {% if ml_result %}
+            <div class="bg-slate-800 rounded-lg border border-purple-700/50 p-6">
+                <h2 class="text-sm font-semibold text-purple-300 uppercase tracking-wider mb-4">
+                    ML-Filtered Comparison
+                    <span class="ml-2 text-xs font-normal text-slate-400">
+                        {{ ml_result.trades_blocked }} trade{{ 's' if ml_result.trades_blocked != 1 else '' }} blocked by ML filter
+                    </span>
+                </h2>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {% set metrics = [
+                        ('CAGR', result.cagr, ml_result.cagr),
+                        ('Sharpe', result.sharpe, ml_result.sharpe),
+                        ('Max DD', result.max_drawdown, ml_result.max_drawdown),
+                        ('Win Rate', result.win_rate, ml_result.win_rate),
+                        ('Profit Factor', result.profit_factor, ml_result.profit_factor),
+                        ('Trades', result.total_trades, ml_result.total_trades),
+                        ('Final Equity', result.final_equity, ml_result.final_equity),
+                    ] %}
+                    {% for label, baseline, filtered in metrics %}
+                    <div class="bg-slate-700/30 rounded p-3">
+                        <p class="text-xs text-slate-400 uppercase mb-1">{{ label }}</p>
+                        <div class="flex items-baseline justify-between">
+                            <span class="text-sm font-mono text-slate-400 line-through">{{ baseline }}</span>
+                            <span class="text-sm font-mono font-bold text-purple-300">{{ filtered }}</span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                <!-- ML Equity Curve -->
+                <div class="mt-4">
+                    <div id="ml-equity-chart" class="w-full" style="height: 300px;"></div>
+                    <script>
+                        document.addEventListener('DOMContentLoaded', function() {
+                            renderChart('ml-equity-chart', {{ ml_result.equity_chart_json|safe }});
+                        });
+                        document.addEventListener('htmx:afterSwap', function() {
+                            var el = document.getElementById('ml-equity-chart');
+                            if (el) {
+                                try {
+                                    renderChart('ml-equity-chart', {{ ml_result.equity_chart_json|safe }});
+                                } catch(e) {}
+                            }
+                        });
+                    </script>
+                </div>
+            </div>
+            {% endif %}
 
             <!-- Trade List -->
             {% if result.trades %}
