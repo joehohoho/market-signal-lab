@@ -100,149 +100,124 @@
         </form>
     </div>
 
-    <!-- Learn & Improve Button (shown after a backtest has results) -->
-    {% if result and not learn_result %}
-    <div class="bg-gradient-to-r from-purple-900/30 to-blue-900/30 rounded-lg border border-purple-700/50 p-5 mb-6">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-sm font-semibold text-purple-200">Learn & Improve</p>
-                <p class="text-xs text-slate-400 mt-1">
-                    Train an ML model from this backtest's trade outcomes. The model learns which BUY signals
-                    lead to profitable trades and blocks the ones that look like past losers.
-                </p>
-            </div>
-            <form action="/backtest/learn" method="post">
-                <input type="hidden" name="asset" value="{{ result.asset }}">
-                <input type="hidden" name="strategy" value="{{ result.strategy }}">
-                <input type="hidden" name="timeframe" value="{{ result.timeframe }}">
-                <input type="hidden" name="fee_preset" value="{{ result.fee_preset }}">
-                <button type="submit"
-                        class="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-5 py-2 rounded transition-colors whitespace-nowrap">
-                    Learn & Improve
-                </button>
-            </form>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- ML Training Result (generic forward-return model) -->
-    {% if ml_trained %}
-    <div class="bg-purple-900/20 border border-purple-700 rounded-lg p-4 mb-6">
-        <p class="text-sm font-medium text-purple-300">ML Model Trained — {{ ml_trained.asset }} / {{ ml_trained.timeframe }}</p>
-        <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-slate-400">
-            <span>Avg AUC: <span class="font-mono text-slate-200">{{ ml_trained.avg_auc }}</span></span>
-            <span>Stable: <span class="font-mono {% if ml_trained.stable %}text-green-400{% else %}text-yellow-400{% endif %}">{{ 'Yes' if ml_trained.stable else 'No' }}</span></span>
-            <span>Window AUCs: <span class="font-mono text-slate-300">{{ ml_trained.auc_scores|join(', ') }}</span></span>
-        </div>
-        <p class="text-xs text-slate-500 mt-1">Re-run a backtest with "ML Filter" checked to see the comparison.</p>
-    </div>
-    {% endif %}
-
-    <!-- Learn & Improve Results -->
-    {% if learn_result %}
-    <div class="space-y-4 mb-6 fade-in">
-        <!-- Learning Stats -->
-        <div class="bg-gradient-to-r from-purple-900/30 to-blue-900/30 rounded-lg border border-purple-700/50 p-5">
-            <h2 class="text-sm font-semibold text-purple-200 uppercase tracking-wider mb-3">
-                Learning Results
-            </h2>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-                <div class="bg-slate-800/50 rounded p-2.5">
-                    <p class="text-xs text-slate-400">Trades Analysed</p>
-                    <p class="text-lg font-mono font-bold text-slate-200">{{ learn_result.total_trades }}</p>
-                </div>
-                <div class="bg-slate-800/50 rounded p-2.5">
-                    <p class="text-xs text-slate-400">Win / Loss</p>
-                    <p class="text-lg font-mono font-bold">
-                        <span class="text-green-400">{{ learn_result.winning_trades }}</span>
-                        <span class="text-slate-500">/</span>
-                        <span class="text-red-400">{{ learn_result.losing_trades }}</span>
-                    </p>
-                </div>
-                <div class="bg-slate-800/50 rounded p-2.5">
-                    <p class="text-xs text-slate-400">Validation AUC</p>
-                    <p class="text-lg font-mono font-bold text-purple-300">{{ learn_result.val_auc }}</p>
-                </div>
-                <div class="bg-slate-800/50 rounded p-2.5">
-                    <p class="text-xs text-slate-400">Validation Accuracy</p>
-                    <p class="text-lg font-mono font-bold text-purple-300">{{ learn_result.val_accuracy }}</p>
-                </div>
-            </div>
-
-            {% if learn_result.top_features %}
-            <div class="mt-2">
-                <p class="text-xs text-slate-400 uppercase tracking-wider mb-1.5">Top Predictive Features</p>
-                <div class="flex flex-wrap gap-2">
-                    {% for feat in learn_result.top_features %}
-                    <span class="inline-flex items-center bg-slate-800/60 rounded px-2.5 py-1 text-xs">
-                        <span class="text-slate-300">{{ feat.name }}</span>
-                        <span class="text-purple-400 font-mono ml-1.5">{{ feat.pct }}</span>
-                    </span>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-        </div>
-
-        <!-- Before / After Comparison -->
-        <div class="bg-slate-800 rounded-lg border border-purple-700/50 p-5">
-            <h2 class="text-sm font-semibold text-purple-200 uppercase tracking-wider mb-4">
-                Before vs After ML Filter
-                <span class="ml-2 text-xs font-normal text-slate-400">
-                    {{ learn_result.trades_blocked }} trade{{ 's' if learn_result.trades_blocked != 1 else '' }} blocked
-                </span>
-            </h2>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {% set compare_metrics = [
-                    ('CAGR', learn_result.baseline.cagr, learn_result.filtered.cagr),
-                    ('Sharpe', learn_result.baseline.sharpe, learn_result.filtered.sharpe),
-                    ('Max DD', learn_result.baseline.max_drawdown, learn_result.filtered.max_drawdown),
-                    ('Win Rate', learn_result.baseline.win_rate, learn_result.filtered.win_rate),
-                    ('Profit Factor', learn_result.baseline.profit_factor, learn_result.filtered.profit_factor),
-                    ('Trades', learn_result.baseline.total_trades, learn_result.filtered.total_trades),
-                    ('Final Equity', learn_result.baseline.final_equity, learn_result.filtered.final_equity),
-                ] %}
-                {% for label, before, after in compare_metrics %}
-                <div class="bg-slate-700/30 rounded p-3">
-                    <p class="text-xs text-slate-400 uppercase mb-1">{{ label }}</p>
-                    <div class="flex items-baseline justify-between gap-2">
-                        <span class="text-xs font-mono text-slate-500 line-through">{{ before }}</span>
-                        <span class="text-sm font-mono font-bold text-purple-300">{{ after }}</span>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-
-            <!-- Comparison Equity Chart -->
-            <div class="mt-4">
-                <div id="comparison-chart" class="w-full" style="height: 350px;"></div>
-                <script>
-                    document.addEventListener('DOMContentLoaded', function() {
-                        renderChart('comparison-chart', {{ learn_result.comparison_chart_json|safe }});
-                    });
-                    document.addEventListener('htmx:afterSwap', function() {
-                        var el = document.getElementById('comparison-chart');
-                        if (el) {
-                            try {
-                                renderChart('comparison-chart', {{ learn_result.comparison_chart_json|safe }});
-                            } catch(e) {}
-                        }
-                    });
-                </script>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Error -->
-    {% if error %}
-    <div class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-6">
-        <p class="text-sm text-red-400">{{ error }}</p>
-    </div>
-    {% endif %}
-
     <!-- Results -->
     <div id="backtest-results">
+        <!-- Error -->
+        {% if error %}
+        <div class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-6">
+            <p class="text-sm text-red-400">{{ error }}</p>
+        </div>
+        {% endif %}
+
+        <!-- ML Training Result (generic forward-return model) -->
+        {% if ml_trained %}
+        <div class="bg-purple-900/20 border border-purple-700 rounded-lg p-4 mb-6">
+            <p class="text-sm font-medium text-purple-300">ML Model Trained — {{ ml_trained.asset }} / {{ ml_trained.timeframe }}</p>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-slate-400">
+                <span>Avg AUC: <span class="font-mono text-slate-200">{{ ml_trained.avg_auc }}</span></span>
+                <span>Stable: <span class="font-mono {% if ml_trained.stable %}text-green-400{% else %}text-yellow-400{% endif %}">{{ 'Yes' if ml_trained.stable else 'No' }}</span></span>
+                <span>Window AUCs: <span class="font-mono text-slate-300">{{ ml_trained.auc_scores|join(', ') }}</span></span>
+            </div>
+            <p class="text-xs text-slate-500 mt-1">Re-run a backtest with "ML Filter" checked to see the comparison.</p>
+        </div>
+        {% endif %}
+
+        <!-- Learn & Improve Results -->
+        {% if learn_result %}
+        <div class="space-y-4 mb-6 fade-in">
+            <!-- Learning Stats -->
+            <div class="bg-gradient-to-r from-purple-900/30 to-blue-900/30 rounded-lg border border-purple-700/50 p-5">
+                <h2 class="text-sm font-semibold text-purple-200 uppercase tracking-wider mb-3">
+                    Learning Results
+                </h2>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                    <div class="bg-slate-800/50 rounded p-2.5">
+                        <p class="text-xs text-slate-400">Trades Analysed</p>
+                        <p class="text-lg font-mono font-bold text-slate-200">{{ learn_result.total_trades }}</p>
+                    </div>
+                    <div class="bg-slate-800/50 rounded p-2.5">
+                        <p class="text-xs text-slate-400">Win / Loss</p>
+                        <p class="text-lg font-mono font-bold">
+                            <span class="text-green-400">{{ learn_result.winning_trades }}</span>
+                            <span class="text-slate-500">/</span>
+                            <span class="text-red-400">{{ learn_result.losing_trades }}</span>
+                        </p>
+                    </div>
+                    <div class="bg-slate-800/50 rounded p-2.5">
+                        <p class="text-xs text-slate-400">Validation AUC</p>
+                        <p class="text-lg font-mono font-bold text-purple-300">{{ learn_result.val_auc }}</p>
+                    </div>
+                    <div class="bg-slate-800/50 rounded p-2.5">
+                        <p class="text-xs text-slate-400">Validation Accuracy</p>
+                        <p class="text-lg font-mono font-bold text-purple-300">{{ learn_result.val_accuracy }}</p>
+                    </div>
+                </div>
+
+                {% if learn_result.top_features %}
+                <div class="mt-2">
+                    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1.5">Top Predictive Features</p>
+                    <div class="flex flex-wrap gap-2">
+                        {% for feat in learn_result.top_features %}
+                        <span class="inline-flex items-center bg-slate-800/60 rounded px-2.5 py-1 text-xs">
+                            <span class="text-slate-300">{{ feat.name }}</span>
+                            <span class="text-purple-400 font-mono ml-1.5">{{ feat.pct }}</span>
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Before / After Comparison -->
+            <div class="bg-slate-800 rounded-lg border border-purple-700/50 p-5">
+                <h2 class="text-sm font-semibold text-purple-200 uppercase tracking-wider mb-4">
+                    Before vs After ML Filter
+                    <span class="ml-2 text-xs font-normal text-slate-400">
+                        {{ learn_result.trades_blocked }} trade{{ 's' if learn_result.trades_blocked != 1 else '' }} blocked
+                    </span>
+                </h2>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {% set compare_metrics = [
+                        ('CAGR', learn_result.baseline.cagr, learn_result.filtered.cagr),
+                        ('Sharpe', learn_result.baseline.sharpe, learn_result.filtered.sharpe),
+                        ('Max DD', learn_result.baseline.max_drawdown, learn_result.filtered.max_drawdown),
+                        ('Win Rate', learn_result.baseline.win_rate, learn_result.filtered.win_rate),
+                        ('Profit Factor', learn_result.baseline.profit_factor, learn_result.filtered.profit_factor),
+                        ('Trades', learn_result.baseline.total_trades, learn_result.filtered.total_trades),
+                        ('Final Equity', learn_result.baseline.final_equity, learn_result.filtered.final_equity),
+                    ] %}
+                    {% for label, before, after in compare_metrics %}
+                    <div class="bg-slate-700/30 rounded p-3">
+                        <p class="text-xs text-slate-400 uppercase mb-1">{{ label }}</p>
+                        <div class="flex items-baseline justify-between gap-2">
+                            <span class="text-xs font-mono text-slate-500 line-through">{{ before }}</span>
+                            <span class="text-sm font-mono font-bold text-purple-300">{{ after }}</span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                <!-- Comparison Equity Chart -->
+                <div class="mt-4">
+                    <div id="comparison-chart" class="w-full" style="height: 350px;"></div>
+                    <script>
+                        document.addEventListener('DOMContentLoaded', function() {
+                            renderChart('comparison-chart', {{ learn_result.comparison_chart_json|safe }});
+                        });
+                        document.addEventListener('htmx:afterSwap', function() {
+                            var el = document.getElementById('comparison-chart');
+                            if (el) {
+                                try {
+                                    renderChart('comparison-chart', {{ learn_result.comparison_chart_json|safe }});
+                                } catch(e) {}
+                            }
+                        });
+                    </script>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         {% if result %}
         <div class="space-y-6 fade-in">
             <!-- Metrics Summary -->
@@ -346,6 +321,31 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Learn & Improve Button -->
+            {% if not learn_result %}
+            <div class="bg-gradient-to-r from-purple-900/30 to-blue-900/30 rounded-lg border border-purple-700/50 p-5">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-semibold text-purple-200">Learn & Improve</p>
+                        <p class="text-xs text-slate-400 mt-1">
+                            Train an ML model from this backtest's trade outcomes. The model learns which BUY signals
+                            lead to profitable trades and blocks the ones that look like past losers.
+                        </p>
+                    </div>
+                    <form action="/backtest/learn" method="post">
+                        <input type="hidden" name="asset" value="{{ result.asset }}">
+                        <input type="hidden" name="strategy" value="{{ result.strategy }}">
+                        <input type="hidden" name="timeframe" value="{{ result.timeframe }}">
+                        <input type="hidden" name="fee_preset" value="{{ result.fee_preset }}">
+                        <button type="submit"
+                                class="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-5 py-2 rounded transition-colors whitespace-nowrap">
+                            Learn & Improve
+                        </button>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
 
             <!-- Equity Curve -->
             <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
