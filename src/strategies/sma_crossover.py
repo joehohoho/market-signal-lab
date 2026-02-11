@@ -1,8 +1,7 @@
 """SMA Crossover strategy.
 
-Generates BUY when the fast SMA crosses above the slow SMA with ATR
-volatility filter and MACD confirmation.  SELL requires the crossover
-plus ATR confirmation (symmetric filtering).
+Generates BUY when the fast SMA crosses above the slow SMA with MACD
+momentum confirmation.  SELL requires the crossover plus MACD confirmation.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ import pandas as pd
 
 from indicators.core import atr as calc_atr
 from indicators.core import macd as calc_macd
-from indicators.core import rsi as calc_rsi
 from indicators.core import sma
 from strategies.base import Signal, SignalResult, Strategy
 
@@ -26,21 +24,18 @@ _DEFAULT_PARAMS: dict[str, Any] = {
 
 
 class SMACrossoverStrategy(Strategy):
-    """Moving-Average crossover with MACD confirmation and symmetric filters.
+    """Moving-Average crossover with MACD momentum confirmation.
 
-    **BUY** when the fast SMA crosses *above* the slow SMA **and**:
-    - ATR exceeds ``atr_filter_mult`` times its rolling mean (volatility), *and*
-    - MACD histogram is positive (momentum confirms the crossover), *and*
-    - RSI is below 70 (not already overbought).
+    **BUY** when the fast SMA crosses *above* the slow SMA **and** the MACD
+    histogram is positive (momentum confirms the crossover).
 
-    **SELL** when the fast SMA crosses *below* the slow SMA **and**:
-    - ATR exceeds ``atr_filter_mult`` times its rolling mean (volatility), *and*
-    - MACD histogram is negative (momentum confirms the breakdown).
+    **SELL** when the fast SMA crosses *below* the slow SMA **and** the MACD
+    histogram is negative (momentum confirms the breakdown).
 
     **HOLD** otherwise.
 
-    Strength is proportional to the normalised distance between the two
-    moving averages.
+    MACD confirmation eliminates most whipsaw trades in sideways markets
+    while keeping legitimate trend entries.
     """
 
     @property
@@ -73,9 +68,6 @@ class SMACrossoverStrategy(Strategy):
         macd_data = calc_macd(close)
         macd_hist: pd.Series = macd_data["histogram"]
 
-        # RSI to avoid buying into overbought conditions
-        rsi_values: pd.Series = calc_rsi(close, 14)
-
         # Crossover detection: compare current vs previous relative positions.
         fast_above = (fast_sma > slow_sma).fillna(False)
         fast_above_prev = fast_above.shift(1).fillna(False)
@@ -96,17 +88,10 @@ class SMACrossoverStrategy(Strategy):
             atr_val = atr_values.iloc[i]
             avg_atr_val = avg_atr.iloc[i]
             hist_val = macd_hist.iloc[i]
-            rsi_val = rsi_values.iloc[i]
             strength = (
                 float(normalised_spread.iloc[i])
                 if pd.notna(normalised_spread.iloc[i])
                 else 0.0
-            )
-
-            atr_ok = (
-                pd.notna(atr_val)
-                and pd.notna(avg_atr_val)
-                and atr_val > atr_filter_mult * avg_atr_val
             )
 
             explanation: dict[str, Any] = {
@@ -115,16 +100,13 @@ class SMACrossoverStrategy(Strategy):
                 "atr": float(atr_val) if pd.notna(atr_val) else None,
                 "avg_atr": float(avg_atr_val) if pd.notna(avg_atr_val) else None,
                 "macd_hist": float(hist_val) if pd.notna(hist_val) else None,
-                "rsi": float(rsi_val) if pd.notna(rsi_val) else None,
                 "atr_filter_mult": atr_filter_mult,
                 "crossover": None,
             }
 
             if (
                 cross_up.iloc[i]
-                and atr_ok
                 and pd.notna(hist_val) and hist_val > 0
-                and (pd.isna(rsi_val) or rsi_val < 70)
             ):
                 explanation["crossover"] = "bullish"
                 signals.append(
@@ -140,7 +122,6 @@ class SMACrossoverStrategy(Strategy):
                 )
             elif (
                 cross_down.iloc[i]
-                and atr_ok
                 and pd.notna(hist_val) and hist_val < 0
             ):
                 explanation["crossover"] = "bearish"
