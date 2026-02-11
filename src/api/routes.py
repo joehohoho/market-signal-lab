@@ -435,6 +435,12 @@ def create_app() -> FastAPI:
         chart_data = _build_candlestick_chart(df, symbol, sma_periods=[20, 50])
         return JSONResponse(content=chart_data)
 
+    def _bt_template(request: Request) -> str:
+        """Pick full page or HTMX partial for backtest responses."""
+        if request.headers.get("HX-Request"):
+            return "_backtest_results.html"
+        return "backtest.html"
+
     @app.post("/backtest", response_class=HTMLResponse)
     async def run_backtest(
         request: Request,
@@ -453,7 +459,7 @@ def create_app() -> FastAPI:
         df = store.load(asset, timeframe)
 
         if df.empty:
-            return templates.TemplateResponse("backtest.html", {
+            return templates.TemplateResponse(_bt_template(request), {
                 "request": request,
                 "error": f"No data available for {asset} ({timeframe})",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
@@ -489,7 +495,7 @@ def create_app() -> FastAPI:
         df = df.reset_index(drop=True)
 
         if len(df) < 2:
-            return templates.TemplateResponse("backtest.html", {
+            return templates.TemplateResponse(_bt_template(request), {
                 "request": request,
                 "error": "Insufficient data for the selected date range.",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
@@ -555,7 +561,7 @@ def create_app() -> FastAPI:
                 "pnl_positive": t.get("pnl", 0) > 0,
             })
 
-        return templates.TemplateResponse("backtest.html", {
+        return templates.TemplateResponse(_bt_template(request), {
             "request": request,
             "error": None,
             "strategies": list(STRATEGY_REGISTRY.keys()),
