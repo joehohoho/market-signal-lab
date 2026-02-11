@@ -175,6 +175,49 @@ def _build_candlestick_chart(
     return json.loads(plotly.io.to_json(fig))
 
 
+def _build_comparison_equity_chart(
+    baseline: pd.Series, filtered: pd.Series,
+) -> dict[str, Any]:
+    """Build a Plotly chart overlaying baseline and ML-filtered equity curves."""
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=[str(ts) for ts in baseline.index],
+            y=baseline.values.tolist(),
+            mode="lines",
+            name="Baseline",
+            line=dict(width=2, color="#94a3b8"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[str(ts) for ts in filtered.index],
+            y=filtered.values.tolist(),
+            mode="lines",
+            name="ML-Filtered",
+            line=dict(width=2, color="#a78bfa"),
+            fill="tonexty",
+            fillcolor="rgba(167, 139, 250, 0.08)",
+        )
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#111827",
+        plot_bgcolor="#1f2937",
+        font=dict(color="#d1d5db"),
+        xaxis=dict(gridcolor="#374151"),
+        yaxis=dict(gridcolor="#374151", title="Equity ($)"),
+        margin=dict(l=60, r=20, t=40, b=40),
+        height=350,
+        title=dict(text="Baseline vs ML-Filtered Equity", font=dict(size=14)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    return json.loads(plotly.io.to_json(fig))
+
+
 def _build_equity_chart(equity_curve: pd.Series) -> dict[str, Any]:
     """Build a Plotly line chart for the equity curve."""
     fig = go.Figure()
@@ -420,6 +463,7 @@ def create_app() -> FastAPI:
                 "ml_filter_on": False,
                 "ml_result": None,
                 "ml_trained": None,
+                "learn_result": None,
             })
 
         # Parse dates
@@ -455,6 +499,7 @@ def create_app() -> FastAPI:
                 "ml_filter_on": False,
                 "ml_result": None,
                 "ml_trained": None,
+                "learn_result": None,
             })
 
         # Get strategy params
@@ -519,6 +564,7 @@ def create_app() -> FastAPI:
             "ml_filter_on": use_ml,
             "ml_result": ml_result_data,
             "ml_trained": None,
+            "learn_result": None,
             "result": {
                 "asset": asset,
                 "strategy": strategy,
@@ -560,12 +606,13 @@ def create_app() -> FastAPI:
                 "ml_filter_on": False,
                 "ml_result": None,
                 "ml_trained": None,
+                "learn_result": None,
             })
 
         try:
             from ml.models import train_and_validate
 
-            ml_result = train_and_validate(df, timeframe=timeframe)
+            ml_result = train_and_validate(df, asset=asset, timeframe=timeframe)
 
             # Save the model
             models_dir = _PROJECT_ROOT / "models"
@@ -577,9 +624,9 @@ def create_app() -> FastAPI:
             train_info = {
                 "asset": asset,
                 "timeframe": timeframe,
-                "auc_scores": [f"{s:.3f}" for s in ml_result.window_metrics.get("main_auc", [])],
+                "auc_scores": [f"{s:.3f}" for s in ml_result.main_aucs],
                 "stable": ml_result.is_stable,
-                "avg_auc": f"{sum(ml_result.window_metrics.get('main_auc', [0])) / max(len(ml_result.window_metrics.get('main_auc', [1])), 1):.3f}",
+                "avg_auc": f"{sum(ml_result.main_aucs) / max(len(ml_result.main_aucs), 1):.3f}",
             }
         except Exception as exc:
             return templates.TemplateResponse("backtest.html", {
@@ -592,6 +639,7 @@ def create_app() -> FastAPI:
                 "ml_filter_on": False,
                 "ml_result": None,
                 "ml_trained": None,
+                "learn_result": None,
             })
 
         return templates.TemplateResponse("backtest.html", {
@@ -604,6 +652,198 @@ def create_app() -> FastAPI:
             "ml_filter_on": False,
             "ml_result": None,
             "ml_trained": train_info,
+            "learn_result": None,
+        })
+
+    @app.post("/backtest/learn", response_class=HTMLResponse)
+    async def learn_and_improve(
+        request: Request,
+        asset: str = Form(...),
+        strategy: str = Form(...),
+        timeframe: str = Form(default="1d"),
+        start_date: str = Form(default=""),
+        end_date: str = Form(default=""),
+        fee_preset: str = Form(default="crypto_major"),
+    ):
+        """Train ML from trade outcomes, then compare baseline vs filtered."""
+        _tpl_base = {
+            "request": request,
+            "strategies": list(STRATEGY_REGISTRY.keys()),
+            "fee_presets": list(_get_fee_presets().keys()),
+            "ml_filter_on": False,
+            "ml_result": None,
+            "ml_trained": None,
+        }
+
+        store = _get_store()
+        df = store.load(asset, timeframe)
+
+        if df.empty:
+            return templates.TemplateResponse("backtest.html", {
+                **_tpl_base,
+                "error": f"No data available for {asset} ({timeframe})",
+                "result": None,
+                "has_ml_model": _has_ml_model(asset, timeframe),
+                "learn_result": None,
+            })
+
+        # Parse and apply date filters
+        start = None
+        end = None
+        if start_date:
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        if end_date:
+            try:
+                end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
+        if start is not None:
+            df = df[df["timestamp"] >= pd.Timestamp(start).tz_localize(None)]
+        if end is not None:
+            df = df[df["timestamp"] <= pd.Timestamp(end).tz_localize(None)]
+        df = df.reset_index(drop=True)
+
+        if len(df) < 50:
+            return templates.TemplateResponse("backtest.html", {
+                **_tpl_base,
+                "error": "Need at least 50 bars to learn from trades.",
+                "result": None,
+                "has_ml_model": _has_ml_model(asset, timeframe),
+                "learn_result": None,
+            })
+
+        strat_cfg = _get_strategy_params()
+        params = strat_cfg.get(strategy, {}).get(timeframe, {})
+        strat_obj = get_strategy(strategy)
+
+        try:
+            from ml.trade_learner import train_from_trades
+
+            learn = train_from_trades(
+                df, strat_obj, params,
+                asset=asset, timeframe=timeframe,
+                fee_preset=fee_preset,
+            )
+
+            # Save model to disk
+            models_dir = _PROJECT_ROOT / "models"
+            models_dir.mkdir(parents=True, exist_ok=True)
+            safe_asset = asset.replace("/", "-").replace("\\", "-")
+            model_path = models_dir / f"{safe_asset}_{timeframe}.joblib"
+            learn.model.save(model_path)
+
+        except (ValueError, ImportError) as exc:
+            return templates.TemplateResponse("backtest.html", {
+                **_tpl_base,
+                "error": f"Learn & Improve failed: {exc}",
+                "result": None,
+                "has_ml_model": _has_ml_model(asset, timeframe),
+                "learn_result": None,
+            })
+
+        # Run baseline backtest
+        engine = BacktestEngine(initial_capital=10_000.0, fee_preset=fee_preset)
+        baseline: BacktestResult = engine.run(
+            df, strat_obj, params, asset=asset, timeframe=timeframe,
+        )
+        # Run ML-filtered backtest (model was just saved to disk)
+        filtered: BacktestResult = engine.run(
+            df, strat_obj, params, asset=asset, timeframe=timeframe,
+            ml_filter=True,
+        )
+
+        # Build comparison equity chart with both curves
+        comparison_chart = _build_comparison_equity_chart(
+            baseline.equity_curve, filtered.equity_curve,
+        )
+        comparison_chart_json = json.dumps(comparison_chart)
+
+        # Format baseline result for the standard display
+        baseline_equity_chart = _build_equity_chart(baseline.equity_curve)
+        baseline_equity_json = json.dumps(baseline_equity_chart)
+
+        formatted_trades = []
+        for t in baseline.trades:
+            formatted_trades.append({
+                "entry_time": _format_timestamp(str(t.get("entry_time", ""))),
+                "exit_time": _format_timestamp(str(t.get("exit_time", ""))),
+                "entry_price": f"${t.get('entry_price', 0):.4f}",
+                "exit_price": f"${t.get('exit_price', 0):.4f}",
+                "pnl": f"${t.get('pnl', 0):.2f}",
+                "pnl_pct": f"{t.get('pnl_pct', 0) * 100:.2f}%",
+                "side": t.get("side", "long"),
+                "exit_reason": t.get("exit_reason", "signal"),
+                "pnl_positive": t.get("pnl", 0) > 0,
+            })
+
+        # Top feature importances (sorted, top 5)
+        top_features = sorted(
+            learn.feature_importances.items(),
+            key=lambda x: x[1], reverse=True,
+        )[:5]
+
+        learn_result = {
+            "total_trades": learn.total_trades,
+            "winning_trades": learn.winning_trades,
+            "losing_trades": learn.losing_trades,
+            "train_accuracy": f"{learn.train_accuracy * 100:.1f}%",
+            "val_accuracy": f"{learn.val_accuracy * 100:.1f}%",
+            "val_auc": f"{learn.val_auc:.3f}",
+            "top_features": [
+                {"name": name.replace("_", " ").title(), "pct": f"{imp * 100:.1f}%"}
+                for name, imp in top_features
+            ],
+            "comparison_chart_json": comparison_chart_json,
+            "baseline": {
+                "cagr": f"{baseline.cagr * 100:.2f}%",
+                "sharpe": f"{baseline.sharpe:.2f}",
+                "max_drawdown": f"{baseline.max_drawdown * 100:.2f}%",
+                "win_rate": f"{baseline.win_rate * 100:.1f}%",
+                "profit_factor": f"{baseline.profit_factor:.2f}" if baseline.profit_factor != float("inf") else "Inf",
+                "total_trades": baseline.total_trades,
+                "final_equity": f"${baseline.final_equity:,.2f}",
+            },
+            "filtered": {
+                "cagr": f"{filtered.cagr * 100:.2f}%",
+                "sharpe": f"{filtered.sharpe:.2f}",
+                "max_drawdown": f"{filtered.max_drawdown * 100:.2f}%",
+                "win_rate": f"{filtered.win_rate * 100:.1f}%",
+                "profit_factor": f"{filtered.profit_factor:.2f}" if filtered.profit_factor != float("inf") else "Inf",
+                "total_trades": filtered.total_trades,
+                "final_equity": f"${filtered.final_equity:,.2f}",
+            },
+            "trades_blocked": baseline.total_trades - filtered.total_trades,
+        }
+
+        result_data = {
+            "asset": asset,
+            "strategy": strategy,
+            "timeframe": timeframe,
+            "fee_preset": fee_preset,
+            "cagr": f"{baseline.cagr * 100:.2f}%",
+            "sharpe": f"{baseline.sharpe:.2f}",
+            "max_drawdown": f"{baseline.max_drawdown * 100:.2f}%",
+            "win_rate": f"{baseline.win_rate * 100:.1f}%",
+            "profit_factor": f"{baseline.profit_factor:.2f}" if baseline.profit_factor != float("inf") else "Inf",
+            "exposure": f"{baseline.exposure * 100:.1f}%",
+            "total_trades": baseline.total_trades,
+            "total_bars": baseline.total_bars,
+            "initial_capital": f"${baseline.initial_capital:,.2f}",
+            "final_equity": f"${baseline.final_equity:,.2f}",
+            "equity_chart_json": baseline_equity_json,
+            "trades": formatted_trades,
+        }
+
+        return templates.TemplateResponse("backtest.html", {
+            **_tpl_base,
+            "error": None,
+            "result": result_data,
+            "has_ml_model": True,
+            "learn_result": learn_result,
         })
 
     @app.get("/backtest", response_class=HTMLResponse)
@@ -619,6 +859,7 @@ def create_app() -> FastAPI:
             "ml_filter_on": False,
             "ml_result": None,
             "ml_trained": None,
+            "learn_result": None,
         })
 
     # ------------------------------------------------------------------

@@ -187,28 +187,40 @@ class BacktestEngine:
                         meta_cols = {"timestamp", "close"}
                         feature_cols = [c for c in feat_df.columns if c not in meta_cols]
 
+                        # Map bar timestamps to feature-row indices so we
+                        # look up the correct features for each bar.
+                        feat_ts = pd.to_datetime(feat_df["timestamp"])
+                        ts_to_feat: dict = {}
+                        for fidx in range(len(feat_df)):
+                            ts_to_feat[feat_ts.iloc[fidx]] = fidx
+
+                        bar_timestamps = pd.to_datetime(df["timestamp"])
+
                         for i in range(len(all_bar_signals)):
                             sig = all_bar_signals[i]
                             if sig.signal != Signal.BUY:
                                 continue
-                            # Find the matching feature row for this bar
-                            if i < len(feat_df):
-                                X = feat_df[feature_cols].iloc[[i]]
-                                try:
-                                    prob = scorer._model.predict_proba(X)
-                                    if float(prob[0]) < 0.55:
-                                        # Replace BUY with HOLD
-                                        all_bar_signals[i] = SignalResult(
-                                            signal=Signal.HOLD,
-                                            strength=0.0,
-                                            strategy_name=sig.strategy_name,
-                                            asset=sig.asset,
-                                            timeframe=sig.timeframe,
-                                            timestamp=sig.timestamp,
-                                            explanation=sig.explanation,
-                                        )
-                                except Exception:
-                                    pass
+                            if i >= len(df):
+                                continue
+                            bar_ts = bar_timestamps.iloc[i]
+                            feat_idx = ts_to_feat.get(bar_ts)
+                            if feat_idx is None:
+                                continue
+                            try:
+                                X = feat_df[feature_cols].iloc[[feat_idx]]
+                                prob = scorer._model.predict_proba(X)
+                                if float(prob[0]) < 0.55:
+                                    all_bar_signals[i] = SignalResult(
+                                        signal=Signal.HOLD,
+                                        strength=0.0,
+                                        strategy_name=sig.strategy_name,
+                                        asset=sig.asset,
+                                        timeframe=sig.timeframe,
+                                        timestamp=sig.timestamp,
+                                        explanation=sig.explanation,
+                                    )
+                            except Exception:
+                                pass
                     logger.info("ML filter applied to backtest signals")
                 else:
                     logger.warning("ML filter requested but no model found for %s/%s", asset, timeframe)
