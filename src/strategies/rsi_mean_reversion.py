@@ -1,8 +1,9 @@
 """RSI Mean Reversion strategy.
 
-Generates BUY when RSI dips below the oversold threshold (and price is above
-the long-term trend MA), and SELL when RSI rises above the overbought
-threshold.
+Generates BUY when RSI *recovers* from oversold (crosses back above
+threshold) in an uptrend, and SELL when RSI *drops* from overbought
+(crosses back below threshold) in a downtrend.  Both directions are
+filtered by trend to avoid counter-trend entries.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from typing import Any
 
 import pandas as pd
 
+from indicators.core import bollinger_bands
 from indicators.core import rsi as compute_rsi
 from indicators.core import sma
 from strategies.base import Signal, SignalResult, Strategy
@@ -24,17 +26,19 @@ _DEFAULT_PARAMS: dict[str, Any] = {
 
 
 class RSIMeanReversionStrategy(Strategy):
-    """Buy oversold dips in an uptrend, sell overbought conditions.
+    """Buy oversold recoveries in uptrends, sell overbought reversals in downtrends.
 
-    **BUY** when RSI drops below the oversold threshold **and** price is above
-    the trend moving average (buying the dip in an uptrend).
+    **BUY** when RSI *crosses back above* the oversold threshold (recovery
+    confirmation) **and** price is above the trend moving average **and**
+    price is near the lower Bollinger Band.
 
-    **SELL** when RSI rises above the overbought threshold.
+    **SELL** when RSI *crosses back below* the overbought threshold (reversal
+    confirmation) **and** price is below the trend moving average.
 
     **HOLD** otherwise.
 
-    Strength is proportional to how far RSI has pushed past its trigger
-    threshold, normalised to ``[0, 1]``.
+    Waiting for the RSI to cross *back through* the threshold confirms
+    that momentum is actually reversing, avoiding "catching a falling knife."
     """
 
     @property
@@ -58,31 +62,48 @@ class RSIMeanReversionStrategy(Strategy):
         rsi_values: pd.Series = compute_rsi(close, rsi_period)
         trend_ma: pd.Series = sma(close, trend_ma_period)
 
+        # Bollinger Bands for mean-reversion proximity check
+        bb = bollinger_bands(close, period=20, num_std=2.0)
+        bb_lower: pd.Series = bb["lower"]
+
+        # RSI crossover detection (recovery / reversal)
+        rsi_below_oversold = (rsi_values < rsi_oversold).fillna(False)
+        rsi_above_overbought = (rsi_values > rsi_overbought).fillna(False)
+        prev_below = rsi_below_oversold.shift(1).fillna(False)
+        prev_above = rsi_above_overbought.shift(1).fillna(False)
+
+        # Recovery: was below oversold, now above it
+        rsi_recovery = prev_below & ~rsi_below_oversold
+        # Reversal: was above overbought, now below it
+        rsi_reversal = prev_above & ~rsi_above_overbought
+
         signals: list[SignalResult] = []
         for i in range(len(df)):
             ts = pd.Timestamp(df.index[i])
             rsi_val = rsi_values.iloc[i]
             ma_val = trend_ma.iloc[i]
             close_val = close.iloc[i]
+            bb_low_val = bb_lower.iloc[i]
 
             explanation: dict[str, Any] = {
                 "rsi": float(rsi_val) if pd.notna(rsi_val) else None,
                 "trend_ma": float(ma_val) if pd.notna(ma_val) else None,
                 "close": float(close_val) if pd.notna(close_val) else None,
+                "bb_lower": float(bb_low_val) if pd.notna(bb_low_val) else None,
                 "rsi_oversold": rsi_oversold,
                 "rsi_overbought": rsi_overbought,
             }
 
             if (
-                pd.notna(rsi_val)
+                rsi_recovery.iloc[i]
+                and pd.notna(rsi_val)
                 and pd.notna(ma_val)
-                and rsi_val < rsi_oversold
                 and close_val > ma_val
+                and pd.notna(bb_low_val)
+                and close_val < bb_low_val * 1.02
             ):
-                # How far below oversold RSI is, normalised.
-                # E.g. RSI=10 with oversold=30 -> distance=20, max ~30 -> ~0.67
                 distance = rsi_oversold - rsi_val
-                strength = min(distance / rsi_oversold, 1.0)
+                strength = min(abs(distance) / rsi_oversold, 1.0)
                 signals.append(
                     SignalResult(
                         signal=Signal.BUY,
@@ -94,12 +115,16 @@ class RSIMeanReversionStrategy(Strategy):
                         explanation=explanation,
                     )
                 )
-            elif pd.notna(rsi_val) and rsi_val > rsi_overbought:
-                # How far above overbought RSI is, normalised.
+            elif (
+                rsi_reversal.iloc[i]
+                and pd.notna(rsi_val)
+                and pd.notna(ma_val)
+                and close_val < ma_val
+            ):
                 distance = rsi_val - rsi_overbought
                 max_distance = 100.0 - rsi_overbought
                 strength = (
-                    min(distance / max_distance, 1.0)
+                    min(abs(distance) / max_distance, 1.0)
                     if max_distance > 0
                     else 1.0
                 )
