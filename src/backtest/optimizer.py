@@ -34,15 +34,18 @@ PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
         "fast_period": [5, 8, 10, 12, 15],
         "slow_period": [20, 25, 30, 40, 50],
         "atr_filter_mult": [0.5, 0.8, 1.0, 1.2, 1.5],
+        "adx_threshold": [15.0, 20.0, 25.0],
     },
     "rsi_mean_reversion": {
         "rsi_period": [10, 12, 14, 16, 20],
         "rsi_oversold": [20, 25, 30, 35],
         "rsi_overbought": [65, 70, 75, 80],
+        "adx_threshold": [20.0, 25.0, 30.0],
     },
     "donchian_breakout": {
         "channel_period": [10, 15, 20, 25, 30],
         "volume_mult": [1.0, 1.3, 1.5, 2.0],
+        "adx_threshold": [15.0, 20.0, 25.0],
     },
 }
 

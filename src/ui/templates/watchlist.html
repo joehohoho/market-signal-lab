@@ -13,6 +13,44 @@
         </span>
     </div>
 
+    <!-- Add Asset Form -->
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 mb-4">
+        <form action="/watchlist/add" method="post" class="flex items-end gap-3 flex-wrap">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Asset</label>
+                <input type="text" name="asset" list="available-assets" placeholder="BTC-USD" required
+                       class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500 placeholder-slate-500 w-40">
+                <datalist id="available-assets">
+                    {% for sym in available_assets %}
+                    <option value="{{ sym }}">
+                    {% endfor %}
+                </datalist>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Timeframe</label>
+                <select name="timeframe"
+                        class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+                    <option value="1d" selected>1 Day</option>
+                    <option value="4h">4 Hours</option>
+                    <option value="1h">1 Hour</option>
+                    <option value="15m">15 Min</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Type</label>
+                <select name="asset_class"
+                        class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+                    <option value="crypto" selected>Crypto</option>
+                    <option value="equity">Equity</option>
+                </select>
+            </div>
+            <button type="submit"
+                    class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded transition-colors">
+                Add
+            </button>
+        </form>
+    </div>
+
     <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
         <table class="w-full">
             <thead>
@@ -22,6 +60,7 @@
                     <th class="px-4 py-3 font-medium">Last Updated</th>
                     <th class="px-4 py-3 font-medium">Active Signals</th>
                     <th class="px-4 py-3 font-medium">Strength</th>
+                    <th class="px-4 py-3 font-medium w-10"></th>
                 </tr>
             </thead>
             <tbody id="watchlist-body"
@@ -76,14 +115,22 @@
                             <span class="text-xs text-slate-500">--</span>
                         {% endif %}
                     </td>
+                    <td class="px-4 py-3 text-center">
+                        <form action="/watchlist/remove" method="post" onclick="event.stopPropagation();" class="inline">
+                            <input type="hidden" name="asset" value="{{ asset.symbol }}">
+                            <button type="submit" title="Remove {{ asset.symbol }}"
+                                    class="text-slate-500 hover:text-red-400 transition-colors text-sm">
+                                &times;
+                            </button>
+                        </form>
+                    </td>
                 </tr>
                 {% endfor %}
 
                 {% if not assets %}
                 <tr>
-                    <td colspan="5" class="px-4 py-8 text-center text-slate-500">
-                        No watchlist assets configured. Add assets to config/config.yaml under the watchlist section,
-                        then ingest data with: <code class="bg-slate-700 px-1 rounded">msl ingest --asset BTC-USD --tf 1d --start 2023-01-01</code>
+                    <td colspan="6" class="px-4 py-8 text-center text-slate-500">
+                        No assets on your watchlist. Use the form above to add one.
                     </td>
                 </tr>
                 {% endif %}

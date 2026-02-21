@@ -229,7 +229,7 @@
                         lead to profitable trades and blocks the ones that look like past losers.
                     </p>
                 </div>
-                <form action="/backtest/learn" method="post">
+                <form action="/backtest/learn" method="post" onsubmit="(function(f){var b=f.querySelector('button');b.disabled=true;b.innerHTML='<svg class=\'animate-spin inline-block w-4 h-4 mr-2 -mt-0.5\' xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\'><circle class=\'opacity-25\' cx=\'12\' cy=\'12\' r=\'10\' stroke=\'currentColor\' stroke-width=\'4\'></circle><path class=\'opacity-75\' fill=\'currentColor\' d=\'M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z\'></path></svg>Training\u2026';b.classList.remove('hover:bg-purple-700');b.classList.add('opacity-75','cursor-wait');})(this);">
                     <input type="hidden" name="asset" value="{{ result.asset }}">
                     <input type="hidden" name="strategy" value="{{ result.strategy }}">
                     <input type="hidden" name="timeframe" value="{{ result.timeframe }}">

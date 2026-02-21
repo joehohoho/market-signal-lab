@@ -6,6 +6,7 @@ Entry point: ``msl`` (installed via pyproject.toml) or ``python -m app.cli``.
 from __future__ import annotations
 
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -107,6 +108,137 @@ def ingest(
     except Exception as exc:
         logger.exception("ingest failed")
         _error(str(exc))
+
+
+# ---------------------------------------------------------------------------
+# import-local
+# ---------------------------------------------------------------------------
+
+@cli.command("import-local")
+@click.option(
+    "--dir",
+    "directory",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Directory containing CSV files to import.",
+)
+@click.option(
+    "--base",
+    default="BTC,XBT,ETH",
+    show_default=True,
+    help="Comma-separated base currencies to import.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Scan and show what would be imported without writing.",
+)
+def import_local(directory: str, base: str, dry_run: bool) -> None:
+    """Bulk-import local CSV files (Kraken OHLCV format) into the data store."""
+    from data.import_local import import_local_csv, scan_csv_directory  # lazy
+
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    dir_path = Path(directory)
+    base_filter = {b.strip().upper() for b in base.split(",")}
+
+    console.print(
+        f"[bold cyan]Import Local[/bold cyan] "
+        f"dir={dir_path} | bases={','.join(sorted(base_filter))} "
+        + ("[yellow](DRY RUN)[/yellow]" if dry_run else "")
+    )
+
+    if dry_run:
+        files = scan_csv_directory(dir_path, base_filter=base_filter)
+        if not files:
+            console.print("[yellow]No matching files found.[/yellow]")
+            return
+
+        table = Table(title=f"Files to Import ({len(files)})")
+        table.add_column("Source File", style="dim")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Timeframe")
+
+        for f in files:
+            table.add_row(f.path.name, f.app_symbol, f.app_timeframe)
+
+        console.print(table)
+        console.print(f"[yellow]Dry run complete. {len(files)} files would be imported.[/yellow]")
+        return
+
+    # Real import with progress bar.
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task_id = progress.add_task("Importing...", total=None)
+
+        def on_progress(parsed, idx, total):
+            progress.update(
+                task_id,
+                total=total,
+                completed=idx,
+                description=f"Importing {parsed.path.name}",
+            )
+
+        results = import_local_csv(
+            directory=dir_path,
+            base_filter=base_filter,
+            dry_run=False,
+            progress_callback=on_progress,
+        )
+
+        if progress.tasks[task_id].total:
+            progress.update(task_id, completed=progress.tasks[task_id].total)
+
+    if not results:
+        console.print("[yellow]No files were imported.[/yellow]")
+        return
+
+    # Summary table.
+    successes = [r for r in results if r.success]
+    failures = [r for r in results if not r.success]
+
+    table = Table(title="Import Summary")
+    table.add_column("Symbol", style="bold")
+    table.add_column("Timeframe")
+    table.add_column("Source File", style="dim")
+    table.add_column("Rows Read", justify="right")
+    table.add_column("Total Rows", justify="right")
+    table.add_column("Status", justify="center")
+
+    for r in results:
+        status = "[green]OK[/green]" if r.success else f"[red]FAIL: {r.error}[/red]"
+        table.add_row(
+            r.app_symbol,
+            r.app_timeframe,
+            r.source_file,
+            f"{r.rows_imported:,}",
+            f"{r.total_rows:,}",
+            status,
+        )
+
+    console.print(table)
+
+    total_rows = sum(r.rows_imported for r in successes)
+    summary = (
+        f"[green]Done.[/green] "
+        f"{len(successes)} files imported ({total_rows:,} total rows). "
+    )
+    if failures:
+        summary += f"[red]{len(failures)} failed.[/red]"
+    console.print(summary)
 
 
 # ---------------------------------------------------------------------------

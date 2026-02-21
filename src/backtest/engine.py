@@ -1,7 +1,7 @@
 """Backtesting engine: simulates a strategy over historical OHLCV data.
 
 The engine iterates through candles chronologically, applies strategy signals,
-and tracks equity, trades, and drawdowns.  For the MVP it supports long-only
+and tracks equity, trades, and drawdowns.  Supports long-only and long/short
 positions with market orders filled at the next bar's open.
 """
 
@@ -24,7 +24,7 @@ from backtest.metrics import (
     sharpe_ratio,
     win_rate,
 )
-from indicators.core import atr as compute_atr
+from indicators.core import atr as compute_atr, volatility as compute_volatility
 from strategies import get_strategy
 from strategies.base import Signal, SignalResult, Strategy
 
@@ -64,6 +64,14 @@ class RiskConfig:
         fixed_stop_pct: Percentage drop from entry to trigger fixed stop.
         atr_period: Lookback period for ATR calculation.
         position_size_pct: Fraction of current equity to allocate per trade.
+        allow_short: Enable short selling on SELL signals when flat.
+        trailing_stop: Trailing stop mode -- ``"none"``, ``"atr_trail"``,
+                       ``"percent_trail"``.
+        trailing_atr_mult: ATR multiplier for trailing stop distance.
+        trailing_pct: Percentage for trailing stop distance.
+        position_sizing: Sizing mode -- ``"fixed"``, ``"volatility_scaled"``.
+        vol_target_risk: Target risk per trade for vol-scaled sizing (decimal).
+        cooldown_bars: Number of bars to skip after a stop-loss exit.
     """
 
     stop_loss: str = "none"
@@ -71,6 +79,13 @@ class RiskConfig:
     fixed_stop_pct: float = 0.05
     atr_period: int = 14
     position_size_pct: float = 0.10
+    allow_short: bool = False
+    trailing_stop: str = "none"
+    trailing_atr_mult: float = 2.0
+    trailing_pct: float = 0.05
+    position_sizing: str = "fixed"
+    vol_target_risk: float = 0.02
+    cooldown_bars: int = 0
 
 
 def _load_fee_preset(preset_name: str) -> dict[str, float]:
@@ -112,15 +127,13 @@ def _effective_sell_price(base_price: float, fees: dict[str, float]) -> float:
 
 
 class BacktestEngine:
-    """Long-only backtesting engine.
+    """Backtesting engine with long/short support, trailing stops, and
+    volatility-scaled position sizing.
 
     Parameters:
         initial_capital: Starting cash balance.
-        fee_preset: Name of a fee/slippage/spread preset (e.g.
-                    ``"liquid_stock"``).  Custom presets can be defined in
-                    ``config/config.yaml`` under ``fee_presets:``.
-        risk_config: :class:`RiskConfig` instance.  When *None*, a
-                     default (no stop-loss, 10% position sizing) is used.
+        fee_preset: Name of a fee/slippage/spread preset.
+        risk_config: :class:`RiskConfig` instance.
     """
 
     def __init__(
@@ -147,105 +160,52 @@ class BacktestEngine:
         timeframe: str = "1d",
         ml_filter: bool = False,
     ) -> BacktestResult:
-        """Execute a full backtest.
-
-        Args:
-            df: OHLCV DataFrame with columns ``timestamp``, ``open``,
-                ``high``, ``low``, ``close``, ``volume``.
-            strategy: A :class:`~strategies.base.Strategy` instance.
-            params: Strategy-specific parameter dict forwarded to
-                    :meth:`Strategy.evaluate`.
-            asset: Asset identifier (for labelling output).
-            timeframe: Candle timeframe string (for labelling output).
-
-        Returns:
-            A :class:`BacktestResult` containing equity curve, trade list,
-            and all computed metrics.
-        """
+        """Execute a full backtest."""
         if df.empty or len(df) < 2:
             logger.warning("Insufficient data for backtest (%d rows)", len(df))
             return self._empty_result(asset, timeframe, strategy.name, params)
 
         df = df.reset_index(drop=True)
 
-        # Pre-compute all strategy signals in one pass using compute()
-        prepared_df = df.set_index("timestamp") if "timestamp" in df.columns and not isinstance(df.index, pd.DatetimeIndex) else df
+        # Pre-compute all strategy signals in one pass
+        prepared_df = (
+            df.set_index("timestamp")
+            if "timestamp" in df.columns and not isinstance(df.index, pd.DatetimeIndex)
+            else df
+        )
         all_bar_signals: list[SignalResult] = strategy.compute(
             prepared_df, asset, timeframe, params,
         )
 
         # Optionally filter signals through ML model
         if ml_filter:
-            try:
-                from ml.scorer import MLScorer
-                from ml.features import build_features
-
-                scorer = MLScorer()
-                if scorer.load_model(asset, timeframe):
-                    feat_df = build_features(df, timeframe)
-                    if not feat_df.empty:
-                        meta_cols = {"timestamp", "close"}
-                        feature_cols = [c for c in feat_df.columns if c not in meta_cols]
-
-                        # Map bar timestamps to feature-row indices so we
-                        # look up the correct features for each bar.
-                        feat_ts = pd.to_datetime(feat_df["timestamp"])
-                        ts_to_feat: dict = {}
-                        for fidx in range(len(feat_df)):
-                            ts_to_feat[feat_ts.iloc[fidx]] = fidx
-
-                        bar_timestamps = pd.to_datetime(df["timestamp"])
-
-                        for i in range(len(all_bar_signals)):
-                            sig = all_bar_signals[i]
-                            if sig.signal != Signal.BUY:
-                                continue
-                            if i >= len(df):
-                                continue
-                            bar_ts = bar_timestamps.iloc[i]
-                            feat_idx = ts_to_feat.get(bar_ts)
-                            if feat_idx is None:
-                                continue
-                            try:
-                                X = feat_df[feature_cols].iloc[[feat_idx]]
-                                prob = scorer._model.predict_proba(X)
-                                if float(prob[0]) < 0.55:
-                                    all_bar_signals[i] = SignalResult(
-                                        signal=Signal.HOLD,
-                                        strength=0.0,
-                                        strategy_name=sig.strategy_name,
-                                        asset=sig.asset,
-                                        timeframe=sig.timeframe,
-                                        timestamp=sig.timestamp,
-                                        explanation=sig.explanation,
-                                    )
-                            except Exception:
-                                pass
-                    logger.info("ML filter applied to backtest signals")
-                else:
-                    logger.warning("ML filter requested but no model found for %s/%s", asset, timeframe)
-            except ImportError:
-                logger.warning("ML filter requested but scikit-learn not available")
-
-        # Pre-compute ATR if needed for stop-loss
-        atr_series: pd.Series | None = None
-        if self.risk.stop_loss == "atr_multiple":
-            atr_series = compute_atr(
-                df["high"], df["low"], df["close"], period=self.risk.atr_period
+            all_bar_signals = self._apply_ml_filter(
+                all_bar_signals, df, asset, timeframe,
             )
 
-        # State
+        # Pre-compute ATR for stop-loss and vol sizing
+        atr_series: pd.Series = compute_atr(
+            df["high"], df["low"], df["close"], period=self.risk.atr_period,
+        )
+
+        # Pre-compute volatility for vol-scaled sizing
+        vol_series: pd.Series | None = None
+        if self.risk.position_sizing == "volatility_scaled":
+            vol_series = compute_volatility(df["close"], period=20)
+
+        # -- Simulation state --
         cash: float = self.initial_capital
-        shares: float = 0.0
+        position_size: float = 0.0  # positive = long, negative = short
         entry_price: float = 0.0
         entry_bar: int = 0
         entry_time: pd.Timestamp | None = None
+        trailing_stop_price: float = 0.0
+        cooldown_remaining: int = 0
 
         equity_values: list[float] = []
         equity_timestamps: list[Any] = []
         trades: list[dict[str, Any]] = []
 
-        # Pending order state: signal from bar i fills at bar i+1's open
         pending_signal: Signal | None = None
 
         for i in range(len(df)):
@@ -255,91 +215,124 @@ class BacktestEngine:
             price_low = float(row["low"])
             price_close = float(row["close"])
             timestamp = row["timestamp"]
+            atr_val = float(atr_series.iloc[i]) if not np.isnan(atr_series.iloc[i]) else 0.0
 
             # ---- Execute pending order at this bar's open ----
             if pending_signal is not None and i > 0:
-                if pending_signal == Signal.BUY and shares == 0:
-                    # Buy: allocate position_size_pct of current equity
-                    buy_price = _effective_buy_price(price_open, self.fees)
-                    if buy_price > 0:
-                        allocation = cash * self.risk.position_size_pct
-                        shares = allocation / buy_price
-                        cash -= shares * buy_price
-                        entry_price = buy_price
-                        entry_bar = i
-                        entry_time = timestamp
+                if cooldown_remaining > 0:
+                    pending_signal = None
+                    cooldown_remaining -= 1
+                elif pending_signal == Signal.BUY:
+                    if position_size < 0:
+                        # Close short first
+                        buy_price = _effective_buy_price(price_open, self.fees)
+                        pnl = abs(position_size) * (entry_price - buy_price)
+                        pnl_pct = (entry_price / buy_price - 1.0) if buy_price > 0 else 0.0
+                        trades.append(self._make_trade(
+                            entry_time, timestamp, entry_price, buy_price,
+                            abs(position_size), pnl, pnl_pct,
+                            entry_bar, i, "short", "signal",
+                        ))
+                        cash += pnl + abs(position_size) * entry_price  # return margin
+                        position_size = 0.0
+                        entry_price = 0.0
+                        entry_time = None
+                        trailing_stop_price = 0.0
 
-                elif pending_signal == Signal.SELL and shares > 0:
-                    # Sell: close entire position
-                    sell_price = _effective_sell_price(price_open, self.fees)
-                    proceeds = shares * sell_price
-                    pnl = proceeds - shares * entry_price
-                    pnl_pct = (sell_price / entry_price - 1.0) if entry_price > 0 else 0.0
+                    if position_size == 0:
+                        # Open long
+                        buy_price = _effective_buy_price(price_open, self.fees)
+                        if buy_price > 0:
+                            alloc = self._compute_position_size(
+                                cash, buy_price, atr_val, vol_series, i,
+                            )
+                            position_size = alloc / buy_price
+                            cash -= position_size * buy_price
+                            entry_price = buy_price
+                            entry_bar = i
+                            entry_time = timestamp
+                            trailing_stop_price = self._init_trailing_stop(
+                                buy_price, atr_val, "long",
+                            )
 
-                    trades.append(
-                        {
-                            "entry_time": entry_time,
-                            "exit_time": timestamp,
-                            "entry_price": entry_price,
-                            "exit_price": sell_price,
-                            "shares": shares,
-                            "pnl": pnl,
-                            "pnl_pct": pnl_pct,
-                            "entry_bar": entry_bar,
-                            "exit_bar": i,
-                            "side": "long",
-                            "exit_reason": "signal",
-                        }
-                    )
-                    cash += proceeds
-                    shares = 0.0
-                    entry_price = 0.0
-                    entry_time = None
+                elif pending_signal == Signal.SELL:
+                    if position_size > 0:
+                        # Close long
+                        sell_price = _effective_sell_price(price_open, self.fees)
+                        proceeds = position_size * sell_price
+                        pnl = proceeds - position_size * entry_price
+                        pnl_pct = (sell_price / entry_price - 1.0) if entry_price > 0 else 0.0
+                        trades.append(self._make_trade(
+                            entry_time, timestamp, entry_price, sell_price,
+                            position_size, pnl, pnl_pct,
+                            entry_bar, i, "long", "signal",
+                        ))
+                        cash += proceeds
+                        position_size = 0.0
+                        entry_price = 0.0
+                        entry_time = None
+                        trailing_stop_price = 0.0
+
+                    if position_size == 0 and self.risk.allow_short:
+                        # Open short
+                        sell_price = _effective_sell_price(price_open, self.fees)
+                        if sell_price > 0:
+                            alloc = self._compute_position_size(
+                                cash, sell_price, atr_val, vol_series, i,
+                            )
+                            short_shares = alloc / sell_price
+                            cash -= short_shares * sell_price  # margin collateral
+                            position_size = -short_shares
+                            entry_price = sell_price
+                            entry_bar = i
+                            entry_time = timestamp
+                            trailing_stop_price = self._init_trailing_stop(
+                                sell_price, atr_val, "short",
+                            )
 
                 pending_signal = None
 
-            # ---- Check stop-loss (intra-bar, using low) ----
-            if shares > 0:
-                stopped = False
-                if self.risk.stop_loss == "fixed_percent":
-                    stop_price = entry_price * (1.0 - self.risk.fixed_stop_pct)
-                    if price_low <= stop_price:
-                        stopped = True
-                        exit_price = _effective_sell_price(stop_price, self.fees)
+            # ---- Update trailing stop ----
+            if position_size != 0 and self.risk.trailing_stop != "none":
+                trailing_stop_price = self._update_trailing_stop(
+                    trailing_stop_price, price_high, price_low, atr_val,
+                    "long" if position_size > 0 else "short",
+                )
 
-                elif self.risk.stop_loss == "atr_multiple" and atr_series is not None:
-                    atr_val = atr_series.iloc[i]
-                    if not np.isnan(atr_val) and atr_val > 0:
-                        stop_price = entry_price - self.risk.atr_stop_mult * atr_val
-                        if price_low <= stop_price:
-                            stopped = True
-                            exit_price = _effective_sell_price(stop_price, self.fees)
-
+            # ---- Check stop-loss (including trailing) ----
+            if position_size != 0:
+                stopped, exit_price = self._check_stop(
+                    position_size, entry_price, price_high, price_low,
+                    atr_val, trailing_stop_price,
+                )
                 if stopped:
-                    proceeds = shares * exit_price
-                    pnl = proceeds - shares * entry_price
-                    pnl_pct = (exit_price / entry_price - 1.0) if entry_price > 0 else 0.0
+                    side = "long" if position_size > 0 else "short"
+                    if side == "long":
+                        proceeds = abs(position_size) * exit_price
+                        pnl = proceeds - abs(position_size) * entry_price
+                        pnl_pct = (exit_price / entry_price - 1.0) if entry_price > 0 else 0.0
+                        cash += proceeds
+                    else:
+                        pnl = abs(position_size) * (entry_price - exit_price)
+                        pnl_pct = (entry_price / exit_price - 1.0) if exit_price > 0 else 0.0
+                        cash += pnl + abs(position_size) * entry_price
 
-                    trades.append(
-                        {
-                            "entry_time": entry_time,
-                            "exit_time": timestamp,
-                            "entry_price": entry_price,
-                            "exit_price": exit_price,
-                            "shares": shares,
-                            "pnl": pnl,
-                            "pnl_pct": pnl_pct,
-                            "entry_bar": entry_bar,
-                            "exit_bar": i,
-                            "side": "long",
-                            "exit_reason": f"stop_{self.risk.stop_loss}",
-                        }
-                    )
-                    cash += proceeds
-                    shares = 0.0
+                    stop_reason = "stop_trailing" if self.risk.trailing_stop != "none" else f"stop_{self.risk.stop_loss}"
+                    trades.append(self._make_trade(
+                        entry_time, timestamp, entry_price, exit_price,
+                        abs(position_size), pnl, pnl_pct,
+                        entry_bar, i, side, stop_reason,
+                    ))
+                    position_size = 0.0
                     entry_price = 0.0
                     entry_time = None
-                    pending_signal = None  # cancel any pending order
+                    trailing_stop_price = 0.0
+                    pending_signal = None
+                    cooldown_remaining = self.risk.cooldown_bars
+
+            # ---- Cooldown tick (when flat) ----
+            if position_size == 0 and cooldown_remaining > 0 and pending_signal is None:
+                cooldown_remaining -= 1
 
             # ---- Look up pre-computed signal for current bar ----
             if i < len(all_bar_signals):
@@ -348,7 +341,15 @@ class BacktestEngine:
                     pending_signal = signal_result.signal
 
             # ---- Record equity ----
-            equity = cash + shares * price_close
+            if position_size > 0:
+                equity = cash + position_size * price_close
+            elif position_size < 0:
+                # Short P&L: profit when price drops
+                unrealised = abs(position_size) * (entry_price - price_close)
+                margin = abs(position_size) * entry_price
+                equity = cash + margin + unrealised
+            else:
+                equity = cash
             equity_values.append(equity)
             equity_timestamps.append(timestamp)
 
@@ -378,6 +379,10 @@ class BacktestEngine:
                     "fixed_stop_pct": self.risk.fixed_stop_pct,
                     "atr_period": self.risk.atr_period,
                     "position_size_pct": self.risk.position_size_pct,
+                    "allow_short": self.risk.allow_short,
+                    "trailing_stop": self.risk.trailing_stop,
+                    "position_sizing": self.risk.position_sizing,
+                    "cooldown_bars": self.risk.cooldown_bars,
                 },
                 "initial_capital": self.initial_capital,
             },
@@ -395,20 +400,217 @@ class BacktestEngine:
 
         logger.info(
             "Backtest %s | %s | %s: %d trades, CAGR=%.2f%%, Sharpe=%.2f, MaxDD=%.2f%%",
-            asset,
-            timeframe,
-            strategy.name,
-            len(trades),
-            result.cagr * 100,
-            result.sharpe,
-            result.max_drawdown * 100,
+            asset, timeframe, strategy.name,
+            len(trades), result.cagr * 100, result.sharpe, result.max_drawdown * 100,
         )
 
         return result
 
     # ------------------------------------------------------------------
+    # Position sizing
+    # ------------------------------------------------------------------
+
+    def _compute_position_size(
+        self,
+        cash: float,
+        price: float,
+        atr_val: float,
+        vol_series: pd.Series | None,
+        bar_idx: int,
+    ) -> float:
+        """Compute dollar amount to allocate for a new position."""
+        if self.risk.position_sizing == "volatility_scaled" and atr_val > 0:
+            # Risk-based: allocate so that 1-ATR move = vol_target_risk * equity
+            risk_per_share = atr_val
+            target_risk_dollars = cash * self.risk.vol_target_risk
+            dollar_alloc = target_risk_dollars / (risk_per_share / price)
+            return min(dollar_alloc, cash * 0.95)  # cap at 95% of cash
+
+        # Fixed percentage
+        return cash * self.risk.position_size_pct
+
+    # ------------------------------------------------------------------
+    # Trailing stop management
+    # ------------------------------------------------------------------
+
+    def _init_trailing_stop(
+        self, entry_price: float, atr_val: float, side: str,
+    ) -> float:
+        """Initialise trailing stop price at entry."""
+        if self.risk.trailing_stop == "atr_trail" and atr_val > 0:
+            dist = self.risk.trailing_atr_mult * atr_val
+            return (entry_price - dist) if side == "long" else (entry_price + dist)
+        elif self.risk.trailing_stop == "percent_trail":
+            dist = entry_price * self.risk.trailing_pct
+            return (entry_price - dist) if side == "long" else (entry_price + dist)
+        return 0.0
+
+    def _update_trailing_stop(
+        self,
+        current_stop: float,
+        bar_high: float,
+        bar_low: float,
+        atr_val: float,
+        side: str,
+    ) -> float:
+        """Ratchet trailing stop in the direction of profit."""
+        if self.risk.trailing_stop == "atr_trail" and atr_val > 0:
+            dist = self.risk.trailing_atr_mult * atr_val
+            if side == "long":
+                new_stop = bar_high - dist
+                return max(current_stop, new_stop)
+            else:
+                new_stop = bar_low + dist
+                return min(current_stop, new_stop) if current_stop > 0 else new_stop
+        elif self.risk.trailing_stop == "percent_trail":
+            if side == "long":
+                new_stop = bar_high * (1.0 - self.risk.trailing_pct)
+                return max(current_stop, new_stop)
+            else:
+                new_stop = bar_low * (1.0 + self.risk.trailing_pct)
+                return min(current_stop, new_stop) if current_stop > 0 else new_stop
+        return current_stop
+
+    # ------------------------------------------------------------------
+    # Stop-loss checking
+    # ------------------------------------------------------------------
+
+    def _check_stop(
+        self,
+        position_size: float,
+        entry_price: float,
+        bar_high: float,
+        bar_low: float,
+        atr_val: float,
+        trailing_stop_price: float,
+    ) -> tuple[bool, float]:
+        """Check if any stop-loss condition is triggered.
+
+        Returns:
+            (stopped, exit_price) tuple.
+        """
+        side = "long" if position_size > 0 else "short"
+
+        # Trailing stop (checked first — takes priority)
+        if self.risk.trailing_stop != "none" and trailing_stop_price > 0:
+            if side == "long" and bar_low <= trailing_stop_price:
+                return True, _effective_sell_price(trailing_stop_price, self.fees)
+            if side == "short" and bar_high >= trailing_stop_price:
+                return True, _effective_buy_price(trailing_stop_price, self.fees)
+
+        # Fixed percentage stop
+        if self.risk.stop_loss == "fixed_percent":
+            if side == "long":
+                stop_price = entry_price * (1.0 - self.risk.fixed_stop_pct)
+                if bar_low <= stop_price:
+                    return True, _effective_sell_price(stop_price, self.fees)
+            else:
+                stop_price = entry_price * (1.0 + self.risk.fixed_stop_pct)
+                if bar_high >= stop_price:
+                    return True, _effective_buy_price(stop_price, self.fees)
+
+        # ATR-based stop
+        if self.risk.stop_loss == "atr_multiple" and atr_val > 0:
+            if side == "long":
+                stop_price = entry_price - self.risk.atr_stop_mult * atr_val
+                if bar_low <= stop_price:
+                    return True, _effective_sell_price(stop_price, self.fees)
+            else:
+                stop_price = entry_price + self.risk.atr_stop_mult * atr_val
+                if bar_high >= stop_price:
+                    return True, _effective_buy_price(stop_price, self.fees)
+
+        return False, 0.0
+
+    # ------------------------------------------------------------------
+    # ML filter
+    # ------------------------------------------------------------------
+
+    def _apply_ml_filter(
+        self,
+        all_bar_signals: list[SignalResult],
+        df: pd.DataFrame,
+        asset: str,
+        timeframe: str,
+    ) -> list[SignalResult]:
+        """Suppress BUY signals that fail ML confidence threshold."""
+        try:
+            from ml.scorer import MLScorer
+            from ml.features import build_features
+
+            scorer = MLScorer()
+            if not scorer.load_model(asset, timeframe):
+                logger.warning("ML filter requested but no model for %s/%s", asset, timeframe)
+                return all_bar_signals
+
+            feat_df = build_features(df, timeframe)
+            if feat_df.empty:
+                return all_bar_signals
+
+            meta_cols = {"timestamp", "close"}
+            feature_cols = [c for c in feat_df.columns if c not in meta_cols]
+            feat_ts = pd.to_datetime(feat_df["timestamp"])
+            ts_to_feat: dict = {feat_ts.iloc[j]: j for j in range(len(feat_df))}
+            bar_timestamps = pd.to_datetime(df["timestamp"])
+
+            for idx in range(len(all_bar_signals)):
+                sig = all_bar_signals[idx]
+                if sig.signal != Signal.BUY or idx >= len(df):
+                    continue
+                bar_ts = bar_timestamps.iloc[idx]
+                feat_idx = ts_to_feat.get(bar_ts)
+                if feat_idx is None:
+                    continue
+                try:
+                    X = feat_df[feature_cols].iloc[[feat_idx]]
+                    prob = scorer._model.predict_proba(X)
+                    if float(prob[0]) < 0.55:
+                        all_bar_signals[idx] = SignalResult(
+                            signal=Signal.HOLD, strength=0.0,
+                            strategy_name=sig.strategy_name, asset=sig.asset,
+                            timeframe=sig.timeframe, timestamp=sig.timestamp,
+                            explanation=sig.explanation,
+                        )
+                except Exception:
+                    pass
+
+            logger.info("ML filter applied to backtest signals")
+        except ImportError:
+            logger.warning("ML filter requested but scikit-learn not available")
+
+        return all_bar_signals
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_trade(
+        entry_time: Any,
+        exit_time: Any,
+        entry_price: float,
+        exit_price: float,
+        shares: float,
+        pnl: float,
+        pnl_pct: float,
+        entry_bar: int,
+        exit_bar: int,
+        side: str,
+        exit_reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "entry_time": entry_time,
+            "exit_time": exit_time,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "shares": shares,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "entry_bar": entry_bar,
+            "exit_bar": exit_bar,
+            "side": side,
+            "exit_reason": exit_reason,
+        }
 
     def _empty_result(
         self,

@@ -1,4 +1,4 @@
-"""Market screener that scans a universe of assets and ranks them by signal quality."""
+"""Market screener with configurable scoring weights and relative strength."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from strategies.base import Signal, SignalResult
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Default stock universe -- popular US + Canada tickers including penny stocks
+# Default stock universe
 # ---------------------------------------------------------------------------
 
 DEFAULT_STOCK_UNIVERSE: list[str] = [
@@ -34,11 +34,14 @@ DEFAULT_STOCK_UNIVERSE: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Composite score weights
+# Default composite score weights (overridable via config)
 # ---------------------------------------------------------------------------
-_WEIGHT_SIGNAL_STRENGTH: float = 0.4
-_WEIGHT_LIQUIDITY: float = 0.3
-_WEIGHT_VOLATILITY_ADJ: float = 0.3
+_DEFAULT_WEIGHTS: dict[str, float] = {
+    "signal_strength": 0.30,
+    "liquidity": 0.20,
+    "volatility_adj": 0.20,
+    "relative_strength": 0.30,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -47,17 +50,7 @@ _WEIGHT_VOLATILITY_ADJ: float = 0.3
 
 @dataclass
 class ScreenerResult:
-    """A single asset's screening output, ready for ranking.
-
-    Attributes:
-        asset: Ticker / symbol.
-        price: Most recent close price.
-        volume: Most recent bar volume.
-        signals: List of :class:`SignalResult` from all evaluated strategies.
-        composite_score: Combined ranking score (higher is better).
-        liquidity_rank: Normalised volume vs. average volume ratio.
-        volatility_adj_score: Signal strength divided by rolling volatility.
-    """
+    """A single asset's screening output, ready for ranking."""
 
     asset: str
     price: float
@@ -66,6 +59,7 @@ class ScreenerResult:
     composite_score: float = 0.0
     liquidity_rank: float = 0.0
     volatility_adj_score: float = 0.0
+    relative_strength: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -73,13 +67,9 @@ class ScreenerResult:
 # ---------------------------------------------------------------------------
 
 class Screener:
-    """Scan a universe of assets against one or more strategies and rank them.
+    """Scan a universe of assets against strategies and rank them.
 
-    Parameters
-    ----------
-    parquet_dir : str or None
-        Override the default parquet directory.  When ``None`` the value is
-        read from the application config.
+    Supports configurable scoring weights and relative strength ranking.
     """
 
     def __init__(self, parquet_dir: str | None = None) -> None:
@@ -97,41 +87,37 @@ class Screener:
         universe_name: str = "crypto",
         timeframe: str = "1d",
         strategies: list[str] | None = None,
+        weights: dict[str, float] | None = None,
     ) -> list[ScreenerResult]:
         """Scan every asset in *universe_name* and return ranked results.
 
         Parameters
         ----------
         universe_name : str
-            Name of the universe defined in the ``screener.universes`` config
-            section.  Built-in names: ``"crypto"``, ``"stocks_daily"``.
+            Universe name from config or built-in.
         timeframe : str
-            Candle interval to evaluate (e.g. ``"1d"``).
+            Candle interval to evaluate.
         strategies : list[str] or None
-            Strategy names to run.  When ``None`` every strategy in
-            :data:`STRATEGY_REGISTRY` is used.
-
-        Returns
-        -------
-        list[ScreenerResult]
-            Assets that have at least one BUY signal, sorted by
-            ``composite_score`` descending.
+            Strategy names to run (None = all).
+        weights : dict or None
+            Override composite score weights. Keys: ``signal_strength``,
+            ``liquidity``, ``volatility_adj``, ``relative_strength``.
         """
         assets = self._resolve_universe(universe_name)
         active_strategies = self._resolve_strategies(strategies)
 
         if not active_strategies:
-            logger.warning(
-                "No active strategies found (registry has %d entries). "
-                "Returning empty scan.",
-                len(STRATEGY_REGISTRY),
-            )
+            logger.warning("No active strategies. Returning empty scan.")
             return []
+
+        # Load weights from config or use defaults
+        w = self._resolve_weights(weights)
 
         cfg = load_config()
         strategy_params: dict[str, dict[str, Any]] = cfg.get("strategies", {})
 
-        results: list[ScreenerResult] = []
+        # Phase 1: Gather data and compute signals + returns for all assets
+        asset_data: list[dict[str, Any]] = []
 
         for asset in assets:
             df = self._store.load(asset, timeframe)
@@ -143,23 +129,49 @@ class Screener:
                 df, asset, timeframe, active_strategies, strategy_params,
             )
 
-            # Only keep assets with at least one BUY signal
             buy_signals = [s for s in signals if s.signal == Signal.BUY]
             if not buy_signals:
                 continue
 
-            result = self._build_result(df, asset, signals, buy_signals)
+            # Compute return for relative strength ranking
+            close = df["close"]
+            n_bars = min(60, len(close) - 1)  # ~3 months for daily
+            ret = (close.iloc[-1] / close.iloc[-n_bars] - 1.0) if n_bars > 0 else 0.0
+
+            asset_data.append({
+                "asset": asset,
+                "df": df,
+                "signals": signals,
+                "buy_signals": buy_signals,
+                "return_60": float(ret),
+            })
+
+        if not asset_data:
+            return []
+
+        # Phase 2: Compute relative strength rank (percentile within universe)
+        returns = [d["return_60"] for d in asset_data]
+        sorted_returns = sorted(returns)
+        n = len(sorted_returns)
+
+        for d in asset_data:
+            rank_pos = sorted_returns.index(d["return_60"])
+            d["relative_strength_pct"] = rank_pos / max(n - 1, 1)  # 0 to 1
+
+        # Phase 3: Build scored results
+        results: list[ScreenerResult] = []
+        for d in asset_data:
+            result = self._build_result(
+                d["df"], d["asset"], d["signals"], d["buy_signals"],
+                d["relative_strength_pct"], w,
+            )
             results.append(result)
 
-        # Sort descending by composite score
         results.sort(key=lambda r: r.composite_score, reverse=True)
 
         logger.info(
-            "Screener scan complete: %d/%d assets passed (universe=%s, tf=%s)",
-            len(results),
-            len(assets),
-            universe_name,
-            timeframe,
+            "Screener scan: %d/%d assets passed (universe=%s, tf=%s)",
+            len(results), len(assets), universe_name, timeframe,
         )
         return results
 
@@ -168,31 +180,21 @@ class Screener:
     # ------------------------------------------------------------------
 
     def _resolve_universe(self, universe_name: str) -> list[str]:
-        """Return the list of asset symbols for the named universe."""
         cfg = load_config()
         screener_cfg = cfg.get("screener", {})
         universes_cfg: dict[str, Any] = screener_cfg.get("universes", {})
 
         if universe_name == "stocks_daily":
-            # Use the hardcoded default list (no full ticker API available)
             return list(DEFAULT_STOCK_UNIVERSE)
 
         universe = universes_cfg.get(universe_name, {})
         asset_list: list[str] = universe.get("assets", [])
-
         if not asset_list:
-            logger.warning(
-                "Universe '%s' has no assets configured. "
-                "Check screener.universes in config.",
-                universe_name,
-            )
+            logger.warning("Universe '%s' has no assets.", universe_name)
         return asset_list
 
     @staticmethod
-    def _resolve_strategies(
-        names: list[str] | None,
-    ) -> list[Strategy]:
-        """Instantiate strategy objects from names (or use all registered)."""
+    def _resolve_strategies(names: list[str] | None) -> list[Strategy]:
         if names is None:
             strategy_classes = list(STRATEGY_REGISTRY.values())
         else:
@@ -200,11 +202,27 @@ class Screener:
             for name in names:
                 cls = STRATEGY_REGISTRY.get(name)
                 if cls is None:
-                    logger.warning("Strategy '%s' not found in registry, skipping.", name)
+                    logger.warning("Strategy '%s' not found, skipping.", name)
                 else:
                     strategy_classes.append(cls)
-
         return [cls() for cls in strategy_classes]
+
+    @staticmethod
+    def _resolve_weights(overrides: dict[str, float] | None) -> dict[str, float]:
+        """Merge user/config weights with defaults."""
+        cfg = load_config()
+        config_weights = cfg.get("screener", {}).get("weights", {})
+        w = {**_DEFAULT_WEIGHTS}
+        if config_weights:
+            w.update(config_weights)
+        if overrides:
+            w.update(overrides)
+
+        # Normalise so weights sum to 1.0
+        total = sum(w.values())
+        if total > 0:
+            w = {k: v / total for k, v in w.items()}
+        return w
 
     @staticmethod
     def _run_strategies(
@@ -214,10 +232,8 @@ class Screener:
         active_strategies: list[Strategy],
         strategy_params: dict[str, dict[str, Any]],
     ) -> list[SignalResult]:
-        """Evaluate every strategy on the latest bar of *df*."""
         signals: list[SignalResult] = []
 
-        # Ensure DatetimeIndex for strategy compute()
         prepared = df
         if not isinstance(df.index, pd.DatetimeIndex):
             if "timestamp" in df.columns:
@@ -240,31 +256,32 @@ class Screener:
         asset: str,
         all_signals: list[SignalResult],
         buy_signals: list[SignalResult],
+        relative_strength_pct: float,
+        weights: dict[str, float],
     ) -> ScreenerResult:
-        """Compute composite score and build a :class:`ScreenerResult`."""
         latest = df.iloc[-1]
         price: float = float(latest["close"])
         volume: float = float(latest["volume"])
 
-        # Average signal strength across BUY signals
+        # Signal strength
         avg_strength = float(np.mean([s.strength for s in buy_signals]))
 
-        # Liquidity proxy: current volume / 20-bar average volume
+        # Liquidity proxy
         avg_volume = float(df["volume"].tail(20).mean())
         liquidity_proxy = volume / avg_volume if avg_volume > 0 else 0.0
 
-        # Volatility (rolling std of log returns, last 20 bars)
+        # Volatility-adjusted score
         vol_series = calc_volatility(df["close"], period=20)
         current_vol = float(vol_series.iloc[-1]) if not np.isnan(vol_series.iloc[-1]) else 1.0
         vol_adj_score = avg_strength / current_vol if current_vol > 0 else avg_strength
-
-        # Cap the volatility-adjusted score to prevent extreme outliers
         vol_adj_score = min(vol_adj_score, 10.0)
 
+        # Composite score with configurable weights
         composite = (
-            _WEIGHT_SIGNAL_STRENGTH * avg_strength
-            + _WEIGHT_LIQUIDITY * min(liquidity_proxy, 5.0)  # cap at 5x avg
-            + _WEIGHT_VOLATILITY_ADJ * vol_adj_score
+            weights.get("signal_strength", 0.3) * avg_strength
+            + weights.get("liquidity", 0.2) * min(liquidity_proxy, 5.0)
+            + weights.get("volatility_adj", 0.2) * vol_adj_score
+            + weights.get("relative_strength", 0.3) * relative_strength_pct
         )
 
         return ScreenerResult(
@@ -275,4 +292,5 @@ class Screener:
             composite_score=composite,
             liquidity_rank=liquidity_proxy,
             volatility_adj_score=vol_adj_score,
+            relative_strength=relative_strength_pct,
         )

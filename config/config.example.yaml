@@ -42,12 +42,16 @@ strategies:
       fast_period: 10
       slow_period: 30
       atr_period: 14
-      atr_filter_mult: 1.0    # Require ATR > atr_filter_mult * avg ATR
+      atr_filter_mult: 1.0
+      regime_filter: true         # ADX-based regime detection
+      adx_threshold: 20.0         # Signal only when ADX > this (trending)
     "15m":
       fast_period: 8
       slow_period: 21
       atr_period: 14
       atr_filter_mult: 0.8
+      regime_filter: true
+      adx_threshold: 20.0
 
   rsi_mean_reversion:
     "1d":
@@ -55,21 +59,29 @@ strategies:
       rsi_oversold: 30
       rsi_overbought: 70
       trend_ma_period: 200
+      regime_filter: true         # ADX-based regime detection
+      adx_threshold: 25.0         # Buy only when ADX < this (ranging)
     "15m":
       rsi_period: 14
       rsi_oversold: 25
       rsi_overbought: 75
       trend_ma_period: 100
+      regime_filter: true
+      adx_threshold: 25.0
 
   donchian_breakout:
     "1d":
       channel_period: 20
       volume_ma_period: 20
-      volume_mult: 1.5         # Volume must be > 1.5x average
+      volume_mult: 1.5
+      regime_filter: true         # ADX-based regime detection
+      adx_threshold: 20.0         # Signal when ADX > this or ADX rising
     "15m":
       channel_period: 15
       volume_ma_period: 20
       volume_mult: 1.3
+      regime_filter: true
+      adx_threshold: 20.0
 
 # Fee/slippage/spread presets
 fee_presets:
@@ -86,13 +98,32 @@ fee_presets:
     slippage_pct: 0.005      # 0.5% - wider spreads
     spread_pct: 0.003        # 0.3%
 
-# Risk controls per strategy/timeframe
+# Risk controls
 risk:
   default:
-    stop_loss: "atr_multiple"   # none | fixed_percent | atr_multiple
-    atr_stop_mult: 2.0          # Exit if price drops > 2x ATR from entry
-    fixed_stop_pct: 0.05        # 5% (used when stop_loss=fixed_percent)
-    position_size_pct: 0.1      # 10% of portfolio per trade
+    stop_loss: "atr_multiple"     # none | fixed_percent | atr_multiple
+    atr_stop_mult: 2.0            # Exit if price moves > 2x ATR from entry
+    fixed_stop_pct: 0.05          # 5% (used when stop_loss=fixed_percent)
+    position_size_pct: 0.1        # 10% of portfolio per trade
+
+    # Short selling
+    allow_short: false            # Enable short positions on SELL signals
+
+    # Trailing stops (ratchets in direction of profit)
+    trailing_stop: "none"         # none | atr_trail | percent_trail
+    trailing_atr_mult: 2.0        # ATR multiplier for trailing distance
+    trailing_pct: 0.05            # Percentage for trailing distance
+
+    # Position sizing mode
+    position_sizing: "fixed"      # fixed | volatility_scaled
+    vol_target_risk: 0.02         # 2% equity risk per trade (vol_scaled)
+
+    # Post-stop cooldown
+    cooldown_bars: 0              # Skip N bars after a stop-loss exit
+
+# Signal engine
+signals:
+  multi_timeframe: false          # Require higher-TF directional alignment
 
 # Screener settings
 screener:
@@ -101,19 +132,24 @@ screener:
       assets: ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "DOGE-USD",
                "XRP-USD", "DOT-USD", "AVAX-USD", "LINK-USD", "MATIC-USD"]
     stocks_daily:
-      # Will scan from a broader list; penny_stock_threshold filters < $5
       penny_stock_threshold: 5.0
       min_volume: 100000
       exchanges: ["us", "canada"]
+
+  # Composite score weights (must sum to ~1.0; auto-normalised)
+  weights:
+    signal_strength: 0.30
+    liquidity: 0.20
+    volatility_adj: 0.20
+    relative_strength: 0.30       # 60-bar return rank within universe
 
 # Slack alerts
 alerts:
   slack:
     enabled: false
-    webhook_url: ""    # Set via SLACK_WEBHOOK_URL env var or here
-    # Which signals trigger alerts:
+    webhook_url: ""
     triggers:
-      - strategy: "*"           # All strategies
+      - strategy: "*"
         timeframes: ["1d", "15m"]
         signals: ["BUY", "SELL"]
 
@@ -121,18 +157,20 @@ alerts:
 ml:
   enabled: false
   horizon_bars:
-    "1d": 5     # Predict 5-day forward return
-    "15m": 20   # Predict ~5 hours forward
+    "1d": 5
+    "15m": 20
   score_threshold: 0.55
   min_train_samples: 500
   walk_forward_windows: 5
+  target_mode: "binary"           # binary | atr_scaled
+  atr_threshold: 0.5              # Significance threshold for atr_scaled
 
 # AI module (optional, local-only)
 ai:
   enabled: false
-  adapter: "null"          # "null" or "ollama"
+  adapter: "null"
   ollama:
-    model: "qwen2.5:7b-instruct"   # Small model for CPU
+    model: "qwen2.5:7b-instruct"
     base_url: "http://localhost:11434"
 
 # Server

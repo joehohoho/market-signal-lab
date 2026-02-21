@@ -46,6 +46,7 @@ _PROJECT_ROOT = _SRC_DIR.parent
 _TEMPLATES_DIR = _SRC_DIR / "ui" / "templates"
 _STATIC_DIR = _SRC_DIR / "ui" / "static"
 _SCENARIOS_DIR = _PROJECT_ROOT / "data" / "scenarios"
+_WATCHLIST_JSON = _PROJECT_ROOT / "data" / "watchlist.json"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,12 +63,48 @@ def _get_store() -> ParquetStore:
     return ParquetStore(parquet_dir)
 
 
+def _load_watchlist_json() -> list[dict[str, Any]] | None:
+    """Load watchlist from data/watchlist.json, or None if absent."""
+    if _WATCHLIST_JSON.exists():
+        try:
+            with open(_WATCHLIST_JSON, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def _save_watchlist_json(items: list[dict[str, Any]]) -> None:
+    """Persist the watchlist to data/watchlist.json."""
+    _WATCHLIST_JSON.parent.mkdir(parents=True, exist_ok=True)
+    with open(_WATCHLIST_JSON, "w") as f:
+        json.dump(items, f, indent=2)
+
+
 def _get_watchlist() -> list[dict[str, Any]]:
-    """Return the watchlist from config."""
+    """Return the watchlist, preferring data/watchlist.json over config."""
+    wl = _load_watchlist_json()
+    if wl is not None:
+        return wl
     try:
         return get_config("watchlist") or []
     except KeyError:
         return []
+
+
+def _available_assets() -> list[str]:
+    """Return sorted unique asset symbols that have parquet data."""
+    store = _get_store()
+    candle_dir = Path(store._parquet_dir)
+    if not candle_dir.exists():
+        return []
+    symbols: set[str] = set()
+    for p in candle_dir.glob("*.parquet"):
+        # Filename is {SYMBOL}_{TIMEFRAME}.parquet
+        parts = p.stem.rsplit("_", 1)
+        if len(parts) == 2:
+            symbols.add(parts[0])
+    return sorted(symbols)
 
 
 def _get_strategy_params() -> dict[str, dict[str, Any]]:
@@ -362,7 +399,39 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse("watchlist.html", {
             "request": request,
             "assets": assets_data,
+            "available_assets": _available_assets(),
+            "watchlist_items": watchlist,
         })
+
+    @app.post("/watchlist/add", response_class=RedirectResponse)
+    async def watchlist_add(
+        asset: str = Form(...),
+        timeframe: str = Form(default="1d"),
+        asset_class: str = Form(default="crypto"),
+    ):
+        """Add an asset to the watchlist."""
+        wl = _get_watchlist()
+        symbol = asset.upper().strip()
+
+        # Skip if already present.
+        if any(item["asset"] == symbol for item in wl):
+            return RedirectResponse(url="/watchlist", status_code=303)
+
+        wl.append({
+            "asset": symbol,
+            "timeframes": [timeframe],
+            "asset_class": asset_class,
+        })
+        _save_watchlist_json(wl)
+        return RedirectResponse(url="/watchlist", status_code=303)
+
+    @app.post("/watchlist/remove", response_class=RedirectResponse)
+    async def watchlist_remove(asset: str = Form(...)):
+        """Remove an asset from the watchlist."""
+        wl = _get_watchlist()
+        wl = [item for item in wl if item["asset"] != asset]
+        _save_watchlist_json(wl)
+        return RedirectResponse(url="/watchlist", status_code=303)
 
     @app.get("/asset/{symbol}", response_class=HTMLResponse)
     async def asset_detail_page(
