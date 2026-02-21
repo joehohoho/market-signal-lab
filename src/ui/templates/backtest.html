@@ -18,9 +18,14 @@
               class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
                 <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Asset</label>
-                <input type="text" name="asset" placeholder="BTC-USD" required
-                       value="{{ result.asset if result else '' }}"
-                       class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500 placeholder-slate-500">
+                <select name="asset" required
+                        class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500">
+                    {% for a in available_assets %}
+                    <option value="{{ a }}" {% if result and result.asset == a %}selected{% endif %}>
+                        {{ a }}
+                    </option>
+                    {% endfor %}
+                </select>
             </div>
             <div>
                 <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">

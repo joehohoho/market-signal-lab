@@ -60,7 +60,11 @@ def _get_store() -> ParquetStore:
         parquet_dir = storage_cfg.get("parquet_dir", "data/candles")
     except KeyError:
         parquet_dir = "data/candles"
-    return ParquetStore(parquet_dir)
+    # Resolve relative paths against the project root, not the CWD
+    path = Path(parquet_dir)
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
+    return ParquetStore(str(path))
 
 
 def _load_watchlist_json() -> list[dict[str, Any]] | None:
@@ -533,6 +537,7 @@ def create_app() -> FastAPI:
                 "error": f"No data available for {asset} ({timeframe})",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
+                "available_assets": _available_assets(),
                 "result": None,
                 "has_ml_model": _has_ml_model(asset, timeframe),
                 "ml_filter_on": False,
@@ -569,6 +574,7 @@ def create_app() -> FastAPI:
                 "error": "Insufficient data for the selected date range.",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
+                "available_assets": _available_assets(),
                 "result": None,
                 "has_ml_model": _has_ml_model(asset, timeframe),
                 "ml_filter_on": False,
@@ -635,6 +641,7 @@ def create_app() -> FastAPI:
             "error": None,
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
+            "available_assets": _available_assets(),
             "has_ml_model": _has_ml_model(asset, timeframe),
             "ml_filter_on": use_ml,
             "ml_result": ml_result_data,
@@ -676,6 +683,7 @@ def create_app() -> FastAPI:
                 "error": f"Need at least 100 bars to train ML. {asset}/{timeframe} has {len(df)}.",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
+                "available_assets": _available_assets(),
                 "result": None,
                 "has_ml_model": False,
                 "ml_filter_on": False,
@@ -709,6 +717,7 @@ def create_app() -> FastAPI:
                 "error": f"ML training failed: {exc}",
                 "strategies": list(STRATEGY_REGISTRY.keys()),
                 "fee_presets": list(_get_fee_presets().keys()),
+                "available_assets": _available_assets(),
                 "result": None,
                 "has_ml_model": _has_ml_model(asset, timeframe),
                 "ml_filter_on": False,
@@ -722,6 +731,7 @@ def create_app() -> FastAPI:
             "error": None,
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
+            "available_assets": _available_assets(),
             "result": None,
             "has_ml_model": True,
             "ml_filter_on": False,
@@ -745,6 +755,7 @@ def create_app() -> FastAPI:
             "request": request,
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
+            "available_assets": _available_assets(),
             "ml_filter_on": False,
             "ml_result": None,
             "ml_trained": None,
@@ -929,6 +940,7 @@ def create_app() -> FastAPI:
             "error": None,
             "strategies": list(STRATEGY_REGISTRY.keys()),
             "fee_presets": list(_get_fee_presets().keys()),
+            "available_assets": _available_assets(),
             "result": None,
             "has_ml_model": False,
             "ml_filter_on": False,
