@@ -598,33 +598,59 @@ def create_app() -> FastAPI:
             fee_preset=fee_preset,
         )
 
-        # If ML filter is on, the main result uses ML and we show baseline as comparison
+        # Always run baseline first
         ml_result_data = None
+        baseline_bt: BacktestResult = engine.run(
+            df, strat_obj, params, asset=asset, timeframe=timeframe,
+        )
+
         if use_ml:
-            result: BacktestResult = engine.run(
+            # Run ML-filtered version and compare
+            ml_bt: BacktestResult = engine.run(
                 df, strat_obj, params, asset=asset, timeframe=timeframe,
                 ml_filter=True,
             )
-            baseline_bt: BacktestResult = engine.run(
-                df, strat_obj, params, asset=asset, timeframe=timeframe,
+
+            # Only use ML as main result if it actually improves performance
+            ml_is_better = ml_bt.sharpe > baseline_bt.sharpe or (
+                ml_bt.sharpe == baseline_bt.sharpe
+                and ml_bt.final_equity > baseline_bt.final_equity
             )
-            baseline_equity_chart = _build_equity_chart(baseline_bt.equity_curve)
-            ml_result_data = {
-                "label": "Baseline (no ML)",
-                "cagr": f"{baseline_bt.cagr * 100:.2f}%",
-                "sharpe": f"{baseline_bt.sharpe:.2f}",
-                "max_drawdown": f"{baseline_bt.max_drawdown * 100:.2f}%",
-                "win_rate": f"{baseline_bt.win_rate * 100:.1f}%",
-                "profit_factor": f"{baseline_bt.profit_factor:.2f}" if baseline_bt.profit_factor != float("inf") else "Inf",
-                "total_trades": baseline_bt.total_trades,
-                "final_equity": f"${baseline_bt.final_equity:,.2f}",
-                "equity_chart_json": json.dumps(baseline_equity_chart),
-                "trades_blocked": baseline_bt.total_trades - result.total_trades,
-            }
+
+            if ml_is_better:
+                # ML improved results — show ML as primary, baseline as comparison
+                result = ml_bt
+                comparison = baseline_bt
+                ml_result_data = {
+                    "label": "Baseline (no ML)",
+                    "cagr": f"{comparison.cagr * 100:.2f}%",
+                    "sharpe": f"{comparison.sharpe:.2f}",
+                    "max_drawdown": f"{comparison.max_drawdown * 100:.2f}%",
+                    "win_rate": f"{comparison.win_rate * 100:.1f}%",
+                    "profit_factor": f"{comparison.profit_factor:.2f}" if comparison.profit_factor != float("inf") else "Inf",
+                    "total_trades": comparison.total_trades,
+                    "final_equity": f"${comparison.final_equity:,.2f}",
+                    "equity_chart_json": json.dumps(_build_equity_chart(comparison.equity_curve)),
+                    "trades_blocked": comparison.total_trades - result.total_trades,
+                }
+            else:
+                # ML didn't help — keep baseline as primary, show ML as comparison
+                result = baseline_bt
+                ml_result_data = {
+                    "label": "ML-Filtered (not applied — no improvement)",
+                    "cagr": f"{ml_bt.cagr * 100:.2f}%",
+                    "sharpe": f"{ml_bt.sharpe:.2f}",
+                    "max_drawdown": f"{ml_bt.max_drawdown * 100:.2f}%",
+                    "win_rate": f"{ml_bt.win_rate * 100:.1f}%",
+                    "profit_factor": f"{ml_bt.profit_factor:.2f}" if ml_bt.profit_factor != float("inf") else "Inf",
+                    "total_trades": ml_bt.total_trades,
+                    "final_equity": f"${ml_bt.final_equity:,.2f}",
+                    "equity_chart_json": json.dumps(_build_equity_chart(ml_bt.equity_curve)),
+                    "trades_blocked": baseline_bt.total_trades - ml_bt.total_trades,
+                }
+                use_ml = False  # Don't mark as ML-active since it wasn't applied
         else:
-            result: BacktestResult = engine.run(
-                df, strat_obj, params, asset=asset, timeframe=timeframe,
-            )
+            result = baseline_bt
 
         # Build equity chart
         equity_chart = _build_equity_chart(result.equity_curve)
@@ -884,6 +910,20 @@ def create_app() -> FastAPI:
             key=lambda x: x[1], reverse=True,
         )[:5]
 
+        # Check if ML actually improved results
+        ml_improved = filtered.sharpe > baseline.sharpe or (
+            filtered.sharpe == baseline.sharpe
+            and filtered.final_equity > baseline.final_equity
+        )
+
+        # If ML didn't help, remove the saved model so it won't be auto-applied
+        if not ml_improved:
+            try:
+                model_path.unlink(missing_ok=True)
+                logger.info("Removed unhelpful ML model at %s", model_path)
+            except Exception:
+                pass
+
         learn_result = {
             "total_trades": learn.total_trades,
             "winning_trades": learn.winning_trades,
@@ -891,6 +931,7 @@ def create_app() -> FastAPI:
             "train_accuracy": f"{learn.train_accuracy * 100:.1f}%",
             "val_accuracy": f"{learn.val_accuracy * 100:.1f}%",
             "val_auc": f"{learn.val_auc:.3f}",
+            "ml_improved": ml_improved,
             "top_features": [
                 {"name": name.replace("_", " ").title(), "pct": f"{imp * 100:.1f}%"}
                 for name, imp in top_features
@@ -940,8 +981,8 @@ def create_app() -> FastAPI:
             **_tpl_base,
             "error": None,
             "result": result_data,
-            "has_ml_model": True,
-            "ml_filter_on": True,
+            "has_ml_model": ml_improved,
+            "ml_filter_on": ml_improved,
             "learn_result": learn_result,
         })
 

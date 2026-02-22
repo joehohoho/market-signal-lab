@@ -65,6 +65,24 @@
             {% endif %}
         </div>
 
+        <!-- Model quality indicator -->
+        {% if not learn_result.ml_improved %}
+        <div class="bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-4">
+            <p class="text-sm font-medium text-yellow-300">Model not applied — no improvement found</p>
+            <p class="text-xs text-slate-400 mt-1">
+                The ML filter reduced performance. The model has been discarded and your next backtest will use the
+                original strategy. Try training with more data, a different timeframe, or a different strategy.
+            </p>
+        </div>
+        {% else %}
+        <div class="bg-green-900/20 border border-green-700/50 rounded-lg p-4">
+            <p class="text-sm font-medium text-green-300">Model saved — will auto-apply to future backtests</p>
+            <p class="text-xs text-slate-400 mt-1">
+                The ML filter improved results. It will automatically apply when you run your next backtest.
+            </p>
+        </div>
+        {% endif %}
+
         <!-- Before / After Comparison -->
         <div class="bg-slate-800 rounded-lg border border-purple-700/50 p-5">
             <h2 class="text-sm font-semibold text-purple-200 uppercase tracking-wider mb-4">
