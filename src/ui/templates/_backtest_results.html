@@ -218,15 +218,21 @@
             </div>
         </div>
 
-        <!-- Learn & Improve Button (only show for baseline results, not ML-filtered) -->
-        {% if not learn_result and not ml_filter_on %}
+        <!-- Learn & Improve Button -->
+        {% if not learn_result %}
         <div class="bg-gradient-to-r from-purple-900/30 to-blue-900/30 rounded-lg border border-purple-700/50 p-5">
             <div class="flex items-center justify-between">
                 <div>
-                    <p class="text-sm font-semibold text-purple-200">Learn & Improve</p>
+                    <p class="text-sm font-semibold text-purple-200">
+                        {% if ml_filter_on %}Retrain & Improve{% else %}Learn & Improve{% endif %}
+                    </p>
                     <p class="text-xs text-slate-400 mt-1">
+                        {% if ml_filter_on %}
+                        Retrain the ML model with fresh data. The updated model will automatically apply to your next backtest.
+                        {% else %}
                         Train an ML model from this backtest's trade outcomes. The model learns which BUY signals
                         lead to profitable trades and blocks the ones that look like past losers.
+                        {% endif %}
                     </p>
                 </div>
                 <form action="/backtest/learn" method="post" onsubmit="(function(f){var b=f.querySelector('button');b.disabled=true;b.innerHTML='<svg class=\'animate-spin inline-block w-4 h-4 mr-2 -mt-0.5\' xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\'><circle class=\'opacity-25\' cx=\'12\' cy=\'12\' r=\'10\' stroke=\'currentColor\' stroke-width=\'4\'></circle><path class=\'opacity-75\' fill=\'currentColor\' d=\'M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z\'></path></svg>Training\u2026';b.classList.remove('hover:bg-purple-700');b.classList.add('opacity-75','cursor-wait');})(this);">
@@ -237,17 +243,10 @@
                     <input type="hidden" name="initial_capital" value="{{ initial_capital_raw|default(10000) }}">
                     <button type="submit"
                             class="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-5 py-2 rounded transition-colors whitespace-nowrap">
-                        Learn & Improve
+                        {% if ml_filter_on %}Retrain{% else %}Learn & Improve{% endif %}
                     </button>
                 </form>
             </div>
-        </div>
-        {% elif ml_filter_on and not learn_result %}
-        <div class="bg-slate-800/50 rounded-lg border border-purple-700/30 p-4">
-            <p class="text-xs text-purple-300">
-                ML model is active — these results already reflect learned improvements.
-                To retrain, uncheck "ML Filter" above, run a baseline backtest, then click Learn & Improve.
-            </p>
         </div>
         {% endif %}
 

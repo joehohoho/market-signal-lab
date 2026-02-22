@@ -527,7 +527,8 @@ def create_app() -> FastAPI:
         ml_filter: str = Form(default=""),
     ):
         """Run a backtest and return the results page."""
-        use_ml = ml_filter == "on"
+        # Auto-apply ML when a trained model exists (learning persists across runs)
+        use_ml = _has_ml_model(asset, timeframe)
 
         store = _get_store()
         df = store.load(asset, timeframe)

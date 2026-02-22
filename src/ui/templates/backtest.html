@@ -91,17 +91,10 @@
                     Run Backtest
                 </button>
                 {% if has_ml_model %}
-                <label class="flex items-center space-x-2 text-sm text-slate-300 cursor-pointer">
-                    <input type="checkbox" name="ml_filter" class="rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500"
-                           {% if ml_filter_on or not result %}checked{% endif %}>
-                    <span>ML Filter</span>
-                    <span class="group/tip relative inline-block cursor-help">
-                        <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-slate-600 text-[10px] text-slate-400">?</span>
-                        <span class="invisible group-hover/tip:visible absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 text-xs text-slate-200 bg-slate-900 rounded shadow-lg w-56 text-center normal-case z-10">
-                            Uses a trained ML model to block low-confidence BUY signals. Run a baseline + ML-filtered comparison.
-                        </span>
-                    </span>
-                </label>
+                <span class="inline-flex items-center gap-1.5 text-xs text-purple-300 bg-purple-900/30 border border-purple-700/50 rounded-full px-3 py-1">
+                    <span class="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
+                    ML Model Active
+                </span>
                 {% endif %}
                 <span id="loading-indicator" class="htmx-indicator text-sm text-slate-400">
                     Running backtest...
