@@ -1140,23 +1140,42 @@ def create_app() -> FastAPI:
             "trades_blocked": baseline.total_trades - filtered.total_trades,
         }
 
+        # Show the better result as the main display
+        main_bt = filtered if ml_improved else baseline
+        main_equity_chart = _build_equity_chart(main_bt.equity_curve)
+        main_equity_json = json.dumps(main_equity_chart)
+
+        main_trades = []
+        for t in main_bt.trades:
+            main_trades.append({
+                "entry_time": _format_timestamp(str(t.get("entry_time", ""))),
+                "exit_time": _format_timestamp(str(t.get("exit_time", ""))),
+                "entry_price": f"${t.get('entry_price', 0):.4f}",
+                "exit_price": f"${t.get('exit_price', 0):.4f}",
+                "pnl": f"${t.get('pnl', 0):.2f}",
+                "pnl_pct": f"{t.get('pnl_pct', 0) * 100:.2f}%",
+                "side": t.get("side", "long"),
+                "exit_reason": t.get("exit_reason", "signal"),
+                "pnl_positive": t.get("pnl", 0) > 0,
+            })
+
         result_data = {
             "asset": asset,
             "strategy": strategy,
             "timeframe": timeframe,
             "fee_preset": fee_preset,
-            "cagr": f"{baseline.cagr * 100:.2f}%",
-            "sharpe": f"{baseline.sharpe:.2f}",
-            "max_drawdown": f"{baseline.max_drawdown * 100:.2f}%",
-            "win_rate": f"{baseline.win_rate * 100:.1f}%",
-            "profit_factor": f"{baseline.profit_factor:.2f}" if baseline.profit_factor != float("inf") else "Inf",
-            "exposure": f"{baseline.exposure * 100:.1f}%",
-            "total_trades": baseline.total_trades,
-            "total_bars": baseline.total_bars,
-            "initial_capital": f"${baseline.initial_capital:,.2f}",
-            "final_equity": f"${baseline.final_equity:,.2f}",
-            "equity_chart_json": baseline_equity_json,
-            "trades": formatted_trades,
+            "cagr": f"{main_bt.cagr * 100:.2f}%",
+            "sharpe": f"{main_bt.sharpe:.2f}",
+            "max_drawdown": f"{main_bt.max_drawdown * 100:.2f}%",
+            "win_rate": f"{main_bt.win_rate * 100:.1f}%",
+            "profit_factor": f"{main_bt.profit_factor:.2f}" if main_bt.profit_factor != float("inf") else "Inf",
+            "exposure": f"{main_bt.exposure * 100:.1f}%",
+            "total_trades": main_bt.total_trades,
+            "total_bars": main_bt.total_bars,
+            "initial_capital": f"${main_bt.initial_capital:,.2f}",
+            "final_equity": f"${main_bt.final_equity:,.2f}",
+            "equity_chart_json": main_equity_json,
+            "trades": main_trades,
         }
 
         return templates.TemplateResponse("backtest.html", {
@@ -1171,6 +1190,12 @@ def create_app() -> FastAPI:
     @app.get("/backtest", response_class=HTMLResponse)
     async def backtest_page(request: Request):
         """Render the backtest form page."""
+        # Check if any ML models exist for common assets
+        any_model = any(
+            _has_ml_model(item["asset"], item.get("timeframes", ["1d"])[0])
+            for item in _get_watchlist()
+        ) if _get_watchlist() else False
+
         return templates.TemplateResponse("backtest.html", {
             "request": request,
             "error": None,
@@ -1178,7 +1203,7 @@ def create_app() -> FastAPI:
             "fee_presets": list(_get_fee_presets().keys()),
             "available_assets": _available_assets(),
             "result": None,
-            "has_ml_model": False,
+            "has_ml_model": any_model,
             "ml_filter_on": False,
             "ml_result": None,
             "ml_trained": None,

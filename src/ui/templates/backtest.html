@@ -95,10 +95,15 @@
                     <span class="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
                     ML Model Active
                 </span>
-                {% elif has_ml_model %}
+                {% elif has_ml_model and result %}
                 <span class="inline-flex items-center gap-1.5 text-xs text-yellow-300 bg-yellow-900/30 border border-yellow-700/50 rounded-full px-3 py-1">
                     <span class="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>
                     ML Model (not improving)
+                </span>
+                {% elif has_ml_model %}
+                <span class="inline-flex items-center gap-1.5 text-xs text-purple-300 bg-purple-900/30 border border-purple-700/50 rounded-full px-3 py-1">
+                    <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                    ML Model Available
                 </span>
                 {% endif %}
                 <span id="loading-indicator" class="htmx-indicator text-sm text-slate-400">
