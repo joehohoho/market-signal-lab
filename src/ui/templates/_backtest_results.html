@@ -218,8 +218,8 @@
             </div>
         </div>
 
-        <!-- Learn & Improve Button -->
-        {% if not learn_result %}
+        <!-- Learn & Improve Button (only show for baseline results, not ML-filtered) -->
+        {% if not learn_result and not ml_filter_on %}
         <div class="bg-gradient-to-r from-purple-900/30 to-blue-900/30 rounded-lg border border-purple-700/50 p-5">
             <div class="flex items-center justify-between">
                 <div>
@@ -241,6 +241,13 @@
                     </button>
                 </form>
             </div>
+        </div>
+        {% elif ml_filter_on and not learn_result %}
+        <div class="bg-slate-800/50 rounded-lg border border-purple-700/30 p-4">
+            <p class="text-xs text-purple-300">
+                ML model is active — these results already reflect learned improvements.
+                To retrain, uncheck "ML Filter" above, run a baseline backtest, then click Learn & Improve.
+            </p>
         </div>
         {% endif %}
 
