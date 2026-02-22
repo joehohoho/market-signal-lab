@@ -234,6 +234,7 @@
                     <input type="hidden" name="strategy" value="{{ result.strategy }}">
                     <input type="hidden" name="timeframe" value="{{ result.timeframe }}">
                     <input type="hidden" name="fee_preset" value="{{ result.fee_preset }}">
+                    <input type="hidden" name="initial_capital" value="{{ initial_capital_raw|default(10000) }}">
                     <button type="submit"
                             class="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-5 py-2 rounded transition-colors whitespace-nowrap">
                         Learn & Improve
