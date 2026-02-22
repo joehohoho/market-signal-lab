@@ -590,35 +590,40 @@ def create_app() -> FastAPI:
         strat_cfg = _get_strategy_params()
         params = strat_cfg.get(strategy, {}).get(timeframe, {})
 
-        # Run backtest (without ML filter for baseline)
+        # Run backtest
         strat_obj = get_strategy(strategy)
         engine = BacktestEngine(
             initial_capital=initial_capital,
             fee_preset=fee_preset,
         )
-        result: BacktestResult = engine.run(
-            df, strat_obj, params, asset=asset, timeframe=timeframe,
-        )
 
-        # If ML filter requested, run a second backtest with it
+        # If ML filter is on, the main result uses ML and we show baseline as comparison
         ml_result_data = None
         if use_ml:
-            ml_bt: BacktestResult = engine.run(
+            result: BacktestResult = engine.run(
                 df, strat_obj, params, asset=asset, timeframe=timeframe,
                 ml_filter=True,
             )
-            ml_equity_chart = _build_equity_chart(ml_bt.equity_curve)
+            baseline_bt: BacktestResult = engine.run(
+                df, strat_obj, params, asset=asset, timeframe=timeframe,
+            )
+            baseline_equity_chart = _build_equity_chart(baseline_bt.equity_curve)
             ml_result_data = {
-                "cagr": f"{ml_bt.cagr * 100:.2f}%",
-                "sharpe": f"{ml_bt.sharpe:.2f}",
-                "max_drawdown": f"{ml_bt.max_drawdown * 100:.2f}%",
-                "win_rate": f"{ml_bt.win_rate * 100:.1f}%",
-                "profit_factor": f"{ml_bt.profit_factor:.2f}" if ml_bt.profit_factor != float("inf") else "Inf",
-                "total_trades": ml_bt.total_trades,
-                "final_equity": f"${ml_bt.final_equity:,.2f}",
-                "equity_chart_json": json.dumps(ml_equity_chart),
-                "trades_blocked": result.total_trades - ml_bt.total_trades,
+                "label": "Baseline (no ML)",
+                "cagr": f"{baseline_bt.cagr * 100:.2f}%",
+                "sharpe": f"{baseline_bt.sharpe:.2f}",
+                "max_drawdown": f"{baseline_bt.max_drawdown * 100:.2f}%",
+                "win_rate": f"{baseline_bt.win_rate * 100:.1f}%",
+                "profit_factor": f"{baseline_bt.profit_factor:.2f}" if baseline_bt.profit_factor != float("inf") else "Inf",
+                "total_trades": baseline_bt.total_trades,
+                "final_equity": f"${baseline_bt.final_equity:,.2f}",
+                "equity_chart_json": json.dumps(baseline_equity_chart),
+                "trades_blocked": baseline_bt.total_trades - result.total_trades,
             }
+        else:
+            result: BacktestResult = engine.run(
+                df, strat_obj, params, asset=asset, timeframe=timeframe,
+            )
 
         # Build equity chart
         equity_chart = _build_equity_chart(result.equity_curve)

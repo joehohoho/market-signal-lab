@@ -58,9 +58,10 @@ class MLScorer:
 
         path = self._model_path
         if path is None:
-            # Convention: models/<asset>_<timeframe>.joblib
+            # Convention: models/<asset>_<timeframe>.joblib relative to project root
             safe_asset = asset.replace("/", "-").replace("\\", "-")
-            path = Path("models") / f"{safe_asset}_{timeframe}.joblib"
+            project_root = Path(__file__).resolve().parent.parent.parent
+            path = project_root / "models" / f"{safe_asset}_{timeframe}.joblib"
 
         if not path.exists():
             logger.info("No model found at %s", path)

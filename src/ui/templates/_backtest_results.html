@@ -261,24 +261,24 @@
             </script>
         </div>
 
-        <!-- ML Comparison -->
+        <!-- Baseline Comparison (shown when ML filter is active) -->
         {% if ml_result %}
         <div class="bg-slate-800 rounded-lg border border-purple-700/50 p-6">
             <h2 class="text-sm font-semibold text-purple-300 uppercase tracking-wider mb-4">
-                ML-Filtered Comparison
+                {{ ml_result.label|default('Baseline Comparison') }}
                 <span class="ml-2 text-xs font-normal text-slate-400">
                     {{ ml_result.trades_blocked }} trade{{ 's' if ml_result.trades_blocked != 1 else '' }} blocked by ML filter
                 </span>
             </h2>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {% set metrics = [
-                    ('CAGR', result.cagr, ml_result.cagr),
-                    ('Sharpe', result.sharpe, ml_result.sharpe),
-                    ('Max DD', result.max_drawdown, ml_result.max_drawdown),
-                    ('Win Rate', result.win_rate, ml_result.win_rate),
-                    ('Profit Factor', result.profit_factor, ml_result.profit_factor),
-                    ('Trades', result.total_trades, ml_result.total_trades),
-                    ('Final Equity', result.final_equity, ml_result.final_equity),
+                    ('CAGR', ml_result.cagr, result.cagr),
+                    ('Sharpe', ml_result.sharpe, result.sharpe),
+                    ('Max DD', ml_result.max_drawdown, result.max_drawdown),
+                    ('Win Rate', ml_result.win_rate, result.win_rate),
+                    ('Profit Factor', ml_result.profit_factor, result.profit_factor),
+                    ('Trades', ml_result.total_trades, result.total_trades),
+                    ('Final Equity', ml_result.final_equity, result.final_equity),
                 ] %}
                 {% for label, baseline, filtered in metrics %}
                 <div class="bg-slate-700/30 rounded p-3">
