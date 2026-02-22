@@ -543,12 +543,21 @@ class BacktestEngine:
                 logger.warning("ML filter requested but no model for %s/%s", asset, timeframe)
                 return all_bar_signals
 
+            # Use threshold and feature list saved with the model
+            threshold = scorer._model.metadata.get("threshold", 0.50)
+            selected_features = scorer._model.metadata.get("selected_features", None)
+
             feat_df = build_features(df, timeframe)
             if feat_df.empty:
                 return all_bar_signals
 
             meta_cols = {"timestamp", "close"}
-            feature_cols = [c for c in feat_df.columns if c not in meta_cols]
+            if selected_features:
+                # Use only the features the model was trained on
+                feature_cols = [c for c in selected_features if c in feat_df.columns]
+            else:
+                feature_cols = [c for c in feat_df.columns if c not in meta_cols]
+
             feat_ts = pd.to_datetime(feat_df["timestamp"])
             ts_to_feat: dict = {feat_ts.iloc[j]: j for j in range(len(feat_df))}
             bar_timestamps = pd.to_datetime(df["timestamp"])
@@ -564,7 +573,7 @@ class BacktestEngine:
                 try:
                     X = feat_df[feature_cols].iloc[[feat_idx]]
                     prob = scorer._model.predict_proba(X)
-                    if float(prob[0]) < 0.55:
+                    if float(prob[0]) < threshold:
                         all_bar_signals[idx] = SignalResult(
                             signal=Signal.HOLD, strength=0.0,
                             strategy_name=sig.strategy_name, asset=sig.asset,
@@ -574,7 +583,10 @@ class BacktestEngine:
                 except Exception:
                     pass
 
-            logger.info("ML filter applied to backtest signals")
+            logger.info(
+                "ML filter applied (threshold=%.2f, features=%d)",
+                threshold, len(feature_cols),
+            )
         except ImportError:
             logger.warning("ML filter requested but scikit-learn not available")
 

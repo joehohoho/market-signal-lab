@@ -102,8 +102,12 @@ class MLScorer:
             return 0.5
 
         # Use only the feature columns the model was trained on.
-        meta_cols = {"timestamp", "close"}
-        feature_cols = [c for c in feat_df.columns if c not in meta_cols]
+        selected = self._model.metadata.get("selected_features", None)
+        if selected:
+            feature_cols = [c for c in selected if c in feat_df.columns]
+        else:
+            meta_cols = {"timestamp", "close"}
+            feature_cols = [c for c in feat_df.columns if c not in meta_cols]
         X = feat_df[feature_cols].iloc[[-1]]  # last row only
 
         proba = self._model.predict_proba(X)

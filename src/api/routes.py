@@ -163,6 +163,104 @@ def _has_ml_model(asset: str, timeframe: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Live price cache — lightweight price fetches from public APIs
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+import httpx as _httpx
+
+# Maps symbol → (fetched_at, price)
+_live_price_cache: dict[str, tuple[float, float]] = {}
+_LIVE_PRICE_TTL = 120  # seconds
+
+
+def _fetch_live_prices(symbols: list[str], watchlist: list[dict]) -> dict[str, float]:
+    """Fetch current prices for watchlist assets (best-effort).
+
+    Uses Kraken Ticker API for crypto, yfinance for equities.
+    Results are cached for 2 minutes.  Failures return empty dict
+    (the watchlist falls back to parquet prices).
+    """
+    now = _time.time()
+    result: dict[str, float] = {}
+    stale: list[str] = []
+
+    # Check cache first
+    for sym in symbols:
+        cached = _live_price_cache.get(sym)
+        if cached and (now - cached[0]) < _LIVE_PRICE_TTL:
+            result[sym] = cached[1]
+        else:
+            stale.append(sym)
+
+    if not stale:
+        return result
+
+    # Determine asset classes
+    asset_class_map: dict[str, str] = {}
+    for item in watchlist:
+        asset_class_map[item["asset"]] = item.get("asset_class", "crypto")
+
+    crypto_syms = [s for s in stale if asset_class_map.get(s, "crypto") == "crypto"]
+    equity_syms = [s for s in stale if asset_class_map.get(s, "crypto") == "equity"]
+
+    # Kraken ticker for crypto (single API call for all)
+    if crypto_syms:
+        try:
+            from data.providers.kraken import _SYMBOL_MAP
+            kraken_pairs = []
+            sym_to_pair: dict[str, str] = {}
+            for sym in crypto_syms:
+                pair = _SYMBOL_MAP.get(sym)
+                if pair:
+                    kraken_pairs.append(pair)
+                    sym_to_pair[sym] = pair
+
+            if kraken_pairs:
+                resp = _httpx.get(
+                    "https://api.kraken.com/0/public/Ticker",
+                    params={"pair": ",".join(kraken_pairs)},
+                    timeout=5.0,
+                )
+                data = resp.json()
+                if not data.get("error"):
+                    result_tickers = data.get("result", {})
+                    # Kraken response keys differ from input (e.g. XBTUSD → XXBTZUSD)
+                    # Match by extracting the base currency from our symbol
+                    for sym, pair in sym_to_pair.items():
+                        # Extract base: BTC-USD → BTC, then map to Kraken base
+                        base = sym.split("-")[0]
+                        kraken_base = {"BTC": "XBT", "DOGE": "XDG"}.get(base, base)
+                        for key, ticker in result_tickers.items():
+                            if kraken_base in key:
+                                price = float(ticker["c"][0])
+                                result[sym] = price
+                                _live_price_cache[sym] = (now, price)
+                                break
+        except Exception:
+            logger.debug("Kraken ticker fetch failed", exc_info=True)
+
+    # yfinance for equities
+    if equity_syms:
+        try:
+            import yfinance as yf
+            for sym in equity_syms:
+                try:
+                    ticker = yf.Ticker(sym)
+                    price = ticker.fast_info.get("lastPrice")
+                    if price:
+                        result[sym] = float(price)
+                        _live_price_cache[sym] = (now, float(price))
+                except Exception:
+                    pass
+        except ImportError:
+            pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Watchlist signal cache — avoids recomputing when data hasn't changed
 # ---------------------------------------------------------------------------
 
@@ -389,6 +487,10 @@ def create_app() -> FastAPI:
         strategies_config = _get_strategy_params()
         now = time.time()
 
+        # Fetch live prices (best-effort, cached 2 min)
+        all_symbols = [item["asset"] for item in watchlist]
+        live_prices = _fetch_live_prices(all_symbols, watchlist)
+
         assets_data: list[dict[str, Any]] = []
 
         for item in watchlist:
@@ -405,17 +507,25 @@ def create_app() -> FastAPI:
             if cached is not None:
                 cached_mtime, cached_at, cached_data = cached
                 if cached_mtime == mtime and (now - cached_at) < ttl:
+                    # Update price from live feed if available
+                    if symbol in live_prices:
+                        cached_data = {
+                            **cached_data,
+                            "price": _format_price(live_prices[symbol]),
+                            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                        }
                     assets_data.append(cached_data)
                     continue
 
-            # Cache miss or stale — recompute
+            # Cache miss or stale — recompute signals
             df = store.load(symbol, tf)
 
             if df.empty:
+                live_p = live_prices.get(symbol)
                 asset_data = {
                     "symbol": symbol,
-                    "price": "N/A",
-                    "timestamp": "No data",
+                    "price": _format_price(live_p) if live_p else "N/A",
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M") if live_p else "No data",
                     "signals": [],
                     "dominant_signal": "HOLD",
                     "strength": 0.0,
@@ -431,8 +541,13 @@ def create_app() -> FastAPI:
                 prepared, symbol, tf, strategies_config=strategies_config,
             )
 
-            price = float(df["close"].iloc[-1])
-            ts = str(df["timestamp"].iloc[-1]) if "timestamp" in df.columns else ""
+            # Use live price if available, otherwise parquet
+            if symbol in live_prices:
+                price = live_prices[symbol]
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            else:
+                price = float(df["close"].iloc[-1])
+                ts = _format_timestamp(str(df["timestamp"].iloc[-1])) if "timestamp" in df.columns else ""
 
             signals_list = []
             dominant = "HOLD"
@@ -452,7 +567,7 @@ def create_app() -> FastAPI:
             asset_data = {
                 "symbol": symbol,
                 "price": _format_price(price),
-                "timestamp": _format_timestamp(ts),
+                "timestamp": ts,
                 "signals": signals_list,
                 "dominant_signal": dominant,
                 "strength": round(max_strength, 2),
@@ -916,12 +1031,16 @@ def create_app() -> FastAPI:
                 fee_preset=fee_preset,
             )
 
-            # Save model to disk
+            # Save model to disk with threshold and feature list
             models_dir = _PROJECT_ROOT / "models"
             models_dir.mkdir(parents=True, exist_ok=True)
             safe_asset = asset.replace("/", "-").replace("\\", "-")
             model_path = models_dir / f"{safe_asset}_{timeframe}.joblib"
-            learn.model.save(model_path)
+            learn.model.save(
+                model_path,
+                threshold=learn.threshold,
+                selected_features=learn.selected_features,
+            )
 
         except (ValueError, ImportError) as exc:
             return templates.TemplateResponse("backtest.html", {

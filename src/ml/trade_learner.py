@@ -34,6 +34,8 @@ class TradeLearnResult:
     train_accuracy: float
     val_accuracy: float
     val_auc: float
+    threshold: float = 0.50
+    selected_features: list[str] = field(default_factory=list)
     feature_importances: dict[str, float] = field(default_factory=dict)
 
 
@@ -150,7 +152,28 @@ def train_from_trades(
             f"Got {n_winning} wins, {n_losing} losses."
         )
 
-    # 6. Train with temporal split (70/30)
+    # 6. Feature selection — reduce to top features to avoid overfitting
+    #    on small datasets.  Use mutual information to rank features.
+    from sklearn.feature_selection import mutual_info_classif
+
+    max_features = min(8, len(feature_cols))
+    mi_scores = mutual_info_classif(X.fillna(0), y, random_state=42)
+    top_indices = np.argsort(mi_scores)[::-1][:max_features]
+    selected_cols = [feature_cols[i] for i in top_indices]
+    X = X[selected_cols]
+    feature_cols = selected_cols
+
+    logger.info(
+        "Feature selection: kept %d of %d features: %s",
+        len(selected_cols), len(mi_scores),
+        ", ".join(selected_cols[:5]),
+    )
+
+    # 7. Model selection — logistic regression for small datasets,
+    #    gradient boosting only when there's enough data.
+    model_type = "logistic" if len(X) < 80 else "gradient_boosting"
+
+    # 8. Train with temporal split (70/30)
     split_point = int(len(X) * 0.7)
     if split_point < 4:
         split_point = max(4, len(X) // 2)
@@ -169,7 +192,7 @@ def train_from_trades(
         X_train, X_val = X, X
         y_train, y_val = y, y
 
-    model = MLModel(model_type="gradient_boosting").train(X_train, y_train)
+    model = MLModel(model_type=model_type).train(X_train, y_train)
 
     # Evaluate
     train_proba = model.predict_proba(X_train)
@@ -185,6 +208,27 @@ def train_from_trades(
     except ValueError:
         val_auc = 0.5
 
+    # Find optimal threshold that maximises precision on training data
+    # (we want to block losers, not block winners)
+    best_threshold = 0.50
+    best_score = 0.0
+    for t in np.arange(0.40, 0.65, 0.01):
+        preds_t = (train_proba >= t).astype(int)
+        # Score = trades kept that were winners / total trades kept
+        kept = preds_t.sum()
+        if kept < 3:  # need at least a few trades
+            continue
+        wins_kept = ((preds_t == 1) & (y_train == 1)).sum()
+        precision = wins_kept / kept
+        # Penalise if we block too many trades (keep at least 40%)
+        keep_ratio = kept / len(preds_t)
+        score = precision * min(1.0, keep_ratio / 0.4)
+        if score > best_score:
+            best_score = score
+            best_threshold = float(t)
+
+    logger.info("Optimal ML threshold: %.2f (precision score: %.3f)", best_threshold, best_score)
+
     # Feature importances
     feature_importances: dict[str, float] = {}
     if model._model is not None:
@@ -192,7 +236,13 @@ def train_from_trades(
             importances = model._model.feature_importances_
             feature_importances = dict(zip(feature_cols, importances.tolist()))
         except AttributeError:
-            pass
+            # Logistic regression: use coefficient magnitudes
+            try:
+                clf = model._model.named_steps["clf"]
+                importances = np.abs(clf.coef_[0])
+                feature_importances = dict(zip(feature_cols, importances.tolist()))
+            except (AttributeError, KeyError):
+                pass
 
     logger.info(
         "Trade learner: %d trades (%d win, %d loss) | "
@@ -208,5 +258,7 @@ def train_from_trades(
         train_accuracy=train_acc,
         val_accuracy=val_acc,
         val_auc=val_auc,
+        threshold=best_threshold,
+        selected_features=selected_cols,
         feature_importances=feature_importances,
     )

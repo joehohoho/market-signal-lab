@@ -104,6 +104,7 @@ class MLModel:
         self.model_type = model_type
         self._model: Any = None
         self.feature_names: list[str] = []
+        self.metadata: dict[str, Any] = {}
 
     # -- training ----------------------------------------------------------
 
@@ -165,11 +166,13 @@ class MLModel:
 
     # -- persistence -------------------------------------------------------
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, **metadata: Any) -> None:
         """Serialize the model to disk using joblib.
 
         Args:
             path: Destination file path (e.g. ``"models/gb_btc_1d.joblib"``).
+            **metadata: Extra keys to store alongside the model (e.g.
+                ``threshold``, ``selected_features``).
         """
         try:
             import joblib
@@ -181,10 +184,13 @@ class MLModel:
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(
-            {"model": self._model, "feature_names": self.feature_names, "model_type": self.model_type},
-            path,
-        )
+        payload = {
+            "model": self._model,
+            "feature_names": self.feature_names,
+            "model_type": self.model_type,
+            **metadata,
+        }
+        joblib.dump(payload, path)
         logger.info("Model saved to %s", path)
 
     def load(self, path: str | Path) -> "MLModel":
@@ -208,6 +214,8 @@ class MLModel:
         self._model = data["model"]
         self.feature_names = data["feature_names"]
         self.model_type = data["model_type"]
+        self.metadata = {k: v for k, v in data.items()
+                         if k not in ("model", "feature_names", "model_type")}
         logger.info("Model loaded from %s", path)
         return self
 
