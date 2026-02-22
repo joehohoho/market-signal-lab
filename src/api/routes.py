@@ -523,6 +523,7 @@ def create_app() -> FastAPI:
         start_date: str = Form(default=""),
         end_date: str = Form(default=""),
         fee_preset: str = Form(default="crypto_major"),
+        initial_capital: float = Form(default=10000.0),
         ml_filter: str = Form(default=""),
     ):
         """Run a backtest and return the results page."""
@@ -544,6 +545,7 @@ def create_app() -> FastAPI:
                 "ml_result": None,
                 "ml_trained": None,
                 "learn_result": None,
+                "initial_capital_raw": initial_capital,
             })
 
         # Parse dates
@@ -581,6 +583,7 @@ def create_app() -> FastAPI:
                 "ml_result": None,
                 "ml_trained": None,
                 "learn_result": None,
+                "initial_capital_raw": initial_capital,
             })
 
         # Get strategy params
@@ -590,7 +593,7 @@ def create_app() -> FastAPI:
         # Run backtest (without ML filter for baseline)
         strat_obj = get_strategy(strategy)
         engine = BacktestEngine(
-            initial_capital=10_000.0,
+            initial_capital=initial_capital,
             fee_preset=fee_preset,
         )
         result: BacktestResult = engine.run(
@@ -647,6 +650,7 @@ def create_app() -> FastAPI:
             "ml_result": ml_result_data,
             "ml_trained": None,
             "learn_result": None,
+            "initial_capital_raw": initial_capital,
             "result": {
                 "asset": asset,
                 "strategy": strategy,
@@ -749,6 +753,7 @@ def create_app() -> FastAPI:
         start_date: str = Form(default=""),
         end_date: str = Form(default=""),
         fee_preset: str = Form(default="crypto_major"),
+        initial_capital: float = Form(default=10000.0),
     ):
         """Train ML from trade outcomes, then compare baseline vs filtered."""
         _tpl_base = {
@@ -759,6 +764,7 @@ def create_app() -> FastAPI:
             "ml_filter_on": False,
             "ml_result": None,
             "ml_trained": None,
+            "initial_capital_raw": initial_capital,
         }
 
         store = _get_store()
@@ -832,7 +838,7 @@ def create_app() -> FastAPI:
             })
 
         # Run baseline backtest
-        engine = BacktestEngine(initial_capital=10_000.0, fee_preset=fee_preset)
+        engine = BacktestEngine(initial_capital=initial_capital, fee_preset=fee_preset)
         baseline: BacktestResult = engine.run(
             df, strat_obj, params, asset=asset, timeframe=timeframe,
         )
@@ -947,6 +953,7 @@ def create_app() -> FastAPI:
             "ml_result": None,
             "ml_trained": None,
             "learn_result": None,
+            "initial_capital_raw": 10000,
         })
 
     # ------------------------------------------------------------------
