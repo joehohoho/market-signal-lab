@@ -8,9 +8,20 @@
 <div class="fade-in">
     <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold text-slate-100">Watchlist</h1>
-        <span class="text-xs text-slate-500">
-            Auto-refreshes every 60s
-        </span>
+        <div class="flex items-center gap-3">
+            <span id="refresh-countdown" class="text-xs text-slate-500 font-mono"></span>
+            <span class="text-xs text-slate-500">
+                {% set mins = (poll_interval|default(300)) // 60 %}
+                {% set secs = (poll_interval|default(300)) % 60 %}
+                {% if mins > 0 and secs > 0 %}
+                Auto-refreshes every {{ mins }}m {{ secs }}s
+                {% elif mins > 0 %}
+                Auto-refreshes every {{ mins }}m
+                {% else %}
+                Auto-refreshes every {{ secs }}s
+                {% endif %}
+            </span>
+        </div>
     </div>
 
     <!-- Add Asset Form -->
@@ -65,7 +76,7 @@
             </thead>
             <tbody id="watchlist-body"
                    hx-get="/watchlist"
-                   hx-trigger="every 60s"
+                   hx-trigger="every {{ poll_interval|default(300) }}s"
                    hx-select="#watchlist-body tr"
                    hx-swap="innerHTML">
                 {% for asset in assets %}
@@ -138,4 +149,35 @@
         </table>
     </div>
 </div>
+
+<script>
+(function() {
+    var interval = {{ poll_interval|default(300) }};
+    var remaining = interval;
+    var el = document.getElementById('refresh-countdown');
+    if (!el) return;
+
+    function fmt(s) {
+        var m = Math.floor(s / 60);
+        var sec = s % 60;
+        return m > 0 ? m + ':' + (sec < 10 ? '0' : '') + sec : sec + 's';
+    }
+
+    function tick() {
+        remaining--;
+        if (remaining <= 0) remaining = interval;
+        el.textContent = fmt(remaining);
+    }
+
+    el.textContent = fmt(remaining);
+    setInterval(tick, 1000);
+
+    // Reset countdown when HTMX swaps new content
+    document.body.addEventListener('htmx:afterSwap', function(e) {
+        if (e.detail.target && e.detail.target.id === 'watchlist-body') {
+            remaining = interval;
+        }
+    });
+})();
+</script>
 {% endblock %}

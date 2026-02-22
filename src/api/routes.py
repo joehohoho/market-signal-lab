@@ -162,6 +162,46 @@ def _has_ml_model(asset: str, timeframe: str) -> bool:
     return model_path.exists()
 
 
+# ---------------------------------------------------------------------------
+# Watchlist signal cache — avoids recomputing when data hasn't changed
+# ---------------------------------------------------------------------------
+
+# Maps (symbol, timeframe) → (parquet_mtime, computed_at, asset_data_dict)
+_watchlist_cache: dict[tuple[str, str], tuple[float, float, dict[str, Any]]] = {}
+
+
+def _parquet_mtime(store: ParquetStore, symbol: str, tf: str) -> float:
+    """Return the mtime of the parquet file, or 0 if missing."""
+    safe = symbol.replace("/", "_")
+    path = Path(store._parquet_dir) / f"{safe}_{tf}.parquet"
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+# How often (seconds) to recompute signals even if the file hasn't changed,
+# keyed by timeframe.  Shorter timeframes get shorter TTLs.
+_SIGNAL_TTL: dict[str, int] = {
+    "15m": 120,    # 2 minutes
+    "1h": 300,     # 5 minutes
+    "4h": 900,     # 15 minutes
+    "1d": 1800,    # 30 minutes
+    "1wk": 3600,   # 1 hour
+}
+
+
+def _watchlist_poll_interval(watchlist: list[dict[str, Any]]) -> int:
+    """Return the HTMX poll interval (seconds) based on fastest timeframe."""
+    tf_order = {"15m": 60, "1h": 120, "4h": 300, "1d": 300, "1wk": 600}
+    fastest = 300  # default 5 minutes
+    for item in watchlist:
+        tfs = item.get("timeframes", ["1d"])
+        for tf in tfs:
+            fastest = min(fastest, tf_order.get(tf, 300))
+    return fastest
+
+
 def _build_candlestick_chart(
     df: pd.DataFrame, symbol: str, sma_periods: list[int] | None = None,
 ) -> dict[str, Any]:
@@ -340,10 +380,14 @@ def create_app() -> FastAPI:
 
     @app.get("/watchlist", response_class=HTMLResponse)
     async def watchlist_page(request: Request):
-        """Render the watchlist page."""
+        """Render the watchlist page with cached signal computation."""
+        import time
+
         watchlist = _get_watchlist()
         store = _get_store()
         engine = SignalEngine()
+        strategies_config = _get_strategy_params()
+        now = time.time()
 
         assets_data: list[dict[str, Any]] = []
 
@@ -352,23 +396,37 @@ def create_app() -> FastAPI:
             timeframes = item.get("timeframes", ["1d"])
             tf = timeframes[0] if timeframes else "1d"
 
+            cache_key = (symbol, tf)
+            mtime = _parquet_mtime(store, symbol, tf)
+            ttl = _SIGNAL_TTL.get(tf, 300)
+
+            # Use cached result if parquet file unchanged and TTL not expired
+            cached = _watchlist_cache.get(cache_key)
+            if cached is not None:
+                cached_mtime, cached_at, cached_data = cached
+                if cached_mtime == mtime and (now - cached_at) < ttl:
+                    assets_data.append(cached_data)
+                    continue
+
+            # Cache miss or stale — recompute
             df = store.load(symbol, tf)
 
             if df.empty:
-                assets_data.append({
+                asset_data = {
                     "symbol": symbol,
                     "price": "N/A",
                     "timestamp": "No data",
                     "signals": [],
                     "dominant_signal": "HOLD",
                     "strength": 0.0,
-                })
+                }
+                assets_data.append(asset_data)
+                _watchlist_cache[cache_key] = (mtime, now, asset_data)
                 continue
 
             # Prepare df for strategies (needs DatetimeIndex)
             prepared = df.set_index("timestamp") if "timestamp" in df.columns else df
 
-            strategies_config = _get_strategy_params()
             signal_results = engine.run_single(
                 prepared, symbol, tf, strategies_config=strategies_config,
             )
@@ -391,20 +449,25 @@ def create_app() -> FastAPI:
                     max_strength = sr.strength
                     dominant = sig_val
 
-            assets_data.append({
+            asset_data = {
                 "symbol": symbol,
                 "price": _format_price(price),
                 "timestamp": _format_timestamp(ts),
                 "signals": signals_list,
                 "dominant_signal": dominant,
                 "strength": round(max_strength, 2),
-            })
+            }
+            assets_data.append(asset_data)
+            _watchlist_cache[cache_key] = (mtime, now, asset_data)
+
+        poll_interval = _watchlist_poll_interval(watchlist)
 
         return templates.TemplateResponse("watchlist.html", {
             "request": request,
             "assets": assets_data,
             "available_assets": _available_assets(),
             "watchlist_items": watchlist,
+            "poll_interval": poll_interval,
         })
 
     @app.post("/watchlist/add", response_class=RedirectResponse)
