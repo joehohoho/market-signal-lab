@@ -935,6 +935,7 @@ def create_app() -> FastAPI:
             "error": None,
             "result": result_data,
             "has_ml_model": True,
+            "ml_filter_on": True,
             "learn_result": learn_result,
         })
 
