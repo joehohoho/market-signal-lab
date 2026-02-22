@@ -259,6 +259,8 @@
                     <input type="hidden" name="timeframe" value="{{ result.timeframe }}">
                     <input type="hidden" name="fee_preset" value="{{ result.fee_preset }}">
                     <input type="hidden" name="initial_capital" value="{{ initial_capital_raw|default(10000) }}">
+                    <input type="hidden" name="start_date" value="{{ start_date_raw|default('') }}">
+                    <input type="hidden" name="end_date" value="{{ end_date_raw|default('') }}">
                     <button type="submit"
                             class="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-5 py-2 rounded transition-colors whitespace-nowrap">
                         {% if ml_filter_on %}Retrain{% else %}Learn & Improve{% endif %}
@@ -267,6 +269,26 @@
             </div>
         </div>
         {% endif %}
+
+        <!-- Re-run Button -->
+        <div class="flex justify-end">
+            <form action="/backtest" method="post">
+                <input type="hidden" name="asset" value="{{ result.asset }}">
+                <input type="hidden" name="strategy" value="{{ result.strategy }}">
+                <input type="hidden" name="timeframe" value="{{ result.timeframe }}">
+                <input type="hidden" name="fee_preset" value="{{ result.fee_preset }}">
+                <input type="hidden" name="initial_capital" value="{{ initial_capital_raw|default(10000) }}">
+                <input type="hidden" name="start_date" value="{{ start_date_raw|default('') }}">
+                <input type="hidden" name="end_date" value="{{ end_date_raw|default('') }}">
+                <button type="submit"
+                        class="inline-flex items-center gap-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium px-4 py-2 rounded transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    Re-run Backtest
+                </button>
+            </form>
+        </div>
 
         <!-- Equity Curve -->
         <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">

@@ -60,12 +60,12 @@
             </div>
             <div>
                 <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">Start Date</label>
-                <input type="date" name="start_date"
+                <input type="date" name="start_date" value="{{ start_date_raw|default('') }}"
                        class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div>
                 <label class="block text-xs text-slate-400 mb-1 uppercase tracking-wider">End Date</label>
-                <input type="date" name="end_date"
+                <input type="date" name="end_date" value="{{ end_date_raw|default('') }}"
                        class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded px-3 py-2 focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div>

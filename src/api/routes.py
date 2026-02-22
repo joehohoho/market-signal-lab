@@ -725,6 +725,8 @@ def create_app() -> FastAPI:
                 "ml_trained": None,
                 "learn_result": None,
                 "initial_capital_raw": initial_capital,
+                "start_date_raw": start_date,
+                "end_date_raw": end_date,
             })
 
         # Parse dates
@@ -763,6 +765,8 @@ def create_app() -> FastAPI:
                 "ml_trained": None,
                 "learn_result": None,
                 "initial_capital_raw": initial_capital,
+                "start_date_raw": start_date,
+                "end_date_raw": end_date,
             })
 
         # Get strategy params
@@ -861,6 +865,8 @@ def create_app() -> FastAPI:
             "ml_trained": None,
             "learn_result": None,
             "initial_capital_raw": initial_capital,
+            "start_date_raw": start_date,
+            "end_date_raw": end_date,
             "result": {
                 "asset": asset,
                 "strategy": strategy,
@@ -975,6 +981,8 @@ def create_app() -> FastAPI:
             "ml_result": None,
             "ml_trained": None,
             "initial_capital_raw": initial_capital,
+            "start_date_raw": start_date,
+            "end_date_raw": end_date,
         }
 
         store = _get_store()
