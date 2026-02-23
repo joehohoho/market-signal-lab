@@ -134,6 +134,42 @@
 
     {% if result %}
     <div class="space-y-6 fade-in">
+        <!-- ML Status Banner (only on regular backtests, not learn results page) -->
+        {% if ml_filter_on and ml_result and not learn_result %}
+        <div class="bg-purple-900/20 border border-purple-700/50 rounded-lg p-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-purple-800/50">
+                    <svg class="w-4 h-4 text-purple-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                    </svg>
+                </span>
+                <div>
+                    <p class="text-sm font-medium text-purple-200">ML Model Applied</p>
+                    <p class="text-xs text-slate-400">
+                        {{ ml_result.trades_blocked }} trade{{ 's' if ml_result.trades_blocked != 1 else '' }} filtered out —
+                        baseline equity was {{ ml_result.final_equity }}
+                    </p>
+                </div>
+            </div>
+            <span class="inline-flex items-center gap-1.5 text-xs text-purple-300 bg-purple-900/40 rounded-full px-3 py-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
+                Active
+            </span>
+        </div>
+        {% elif has_ml_model and not ml_filter_on and not learn_result %}
+        <div class="bg-yellow-900/15 border border-yellow-700/40 rounded-lg p-4 flex items-center gap-3">
+            <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-yellow-800/40">
+                <svg class="w-4 h-4 text-yellow-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+            </span>
+            <div>
+                <p class="text-sm font-medium text-yellow-200">ML Model Available — Not Improving</p>
+                <p class="text-xs text-slate-400">A trained model exists but didn't improve results for this strategy/timeframe. Showing baseline.</p>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Metrics Summary -->
         <div class="bg-slate-800 rounded-lg border border-slate-700 p-6">
             <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">
@@ -405,3 +441,23 @@
     </div>
     {% endif %}
 </div>
+
+<!-- OOB swap: update the ML badge in the form area for HTMX requests -->
+<span id="ml-badge" hx-swap-oob="true">
+{% if ml_filter_on %}
+<span class="inline-flex items-center gap-1.5 text-xs text-purple-300 bg-purple-900/30 border border-purple-700/50 rounded-full px-3 py-1">
+    <span class="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
+    ML Model Active
+</span>
+{% elif has_ml_model and result %}
+<span class="inline-flex items-center gap-1.5 text-xs text-yellow-300 bg-yellow-900/30 border border-yellow-700/50 rounded-full px-3 py-1">
+    <span class="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>
+    ML Model (not improving)
+</span>
+{% elif has_ml_model %}
+<span class="inline-flex items-center gap-1.5 text-xs text-purple-300 bg-purple-900/30 border border-purple-700/50 rounded-full px-3 py-1">
+    <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+    ML Model Available
+</span>
+{% endif %}
+</span>
