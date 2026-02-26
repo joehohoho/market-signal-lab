@@ -217,11 +217,15 @@ class BacktestEngine:
             timestamp = row["timestamp"]
             atr_val = float(atr_series.iloc[i]) if not np.isnan(atr_series.iloc[i]) else 0.0
 
+            # Guard flag: ensures cooldown decrements at most once per bar
+            cooldown_decremented: bool = False
+
             # ---- Execute pending order at this bar's open ----
             if pending_signal is not None and i > 0:
                 if cooldown_remaining > 0:
                     pending_signal = None
                     cooldown_remaining -= 1
+                    cooldown_decremented = True
                 elif pending_signal == Signal.BUY:
                     if position_size < 0:
                         # Close short first
@@ -331,7 +335,8 @@ class BacktestEngine:
                     cooldown_remaining = self.risk.cooldown_bars
 
             # ---- Cooldown tick (when flat) ----
-            if position_size == 0 and cooldown_remaining > 0 and pending_signal is None:
+            # Guard: skip if cooldown was already decremented this bar (e.g. pending-signal rejection above)
+            if position_size == 0 and cooldown_remaining > 0 and pending_signal is None and not cooldown_decremented:
                 cooldown_remaining -= 1
 
             # ---- Look up pre-computed signal for current bar ----
@@ -352,6 +357,38 @@ class BacktestEngine:
                 equity = cash
             equity_values.append(equity)
             equity_timestamps.append(timestamp)
+
+        # ---- Force-close any open position at the last bar's close ----
+        if position_size != 0 and len(df) > 0:
+            last_row = df.iloc[-1]
+            last_close = float(last_row["close"])
+            last_timestamp = last_row["timestamp"]
+            last_bar_idx = len(df) - 1
+            side = "long" if position_size > 0 else "short"
+
+            if side == "long":
+                exit_price = _effective_sell_price(last_close, self.fees)
+                proceeds = position_size * exit_price
+                pnl = proceeds - position_size * entry_price
+                pnl_pct = (exit_price / entry_price - 1.0) if entry_price > 0 else 0.0
+                cash += proceeds
+            else:
+                exit_price = _effective_buy_price(last_close, self.fees)
+                pnl = abs(position_size) * (entry_price - exit_price)
+                pnl_pct = (entry_price / exit_price - 1.0) if exit_price > 0 else 0.0
+                cash += pnl + abs(position_size) * entry_price
+
+            trades.append(self._make_trade(
+                entry_time, last_timestamp, entry_price, exit_price,
+                abs(position_size), pnl, pnl_pct,
+                entry_bar, last_bar_idx, side, "end_of_data",
+            ))
+
+            # Update the final equity value to reflect the now-realised cash
+            if equity_values:
+                equity_values[-1] = cash
+
+            position_size = 0.0
 
         # ---- Build equity curve ----
         equity_curve = pd.Series(
@@ -562,6 +599,10 @@ class BacktestEngine:
             ts_to_feat: dict = {feat_ts.iloc[j]: j for j in range(len(feat_df))}
             bar_timestamps = pd.to_datetime(df["timestamp"])
 
+            ml_gated = 0
+            ml_passed = 0
+            ml_errors = 0
+
             for idx in range(len(all_bar_signals)):
                 sig = all_bar_signals[idx]
                 if sig.signal != Signal.BUY or idx >= len(df):
@@ -580,13 +621,31 @@ class BacktestEngine:
                             timeframe=sig.timeframe, timestamp=sig.timestamp,
                             explanation=sig.explanation,
                         )
-                except Exception:
-                    pass
+                        ml_gated += 1
+                    else:
+                        ml_passed += 1
+                except Exception as exc:
+                    ml_errors += 1
+                    logger.warning(
+                        "ML filter inference error at bar %d (%s) for %s/%s — "
+                        "signal passed through unfiltered: %s",
+                        idx, bar_ts, asset, timeframe, exc,
+                        exc_info=True,
+                    )
+                    # Pass-through: leave original signal intact (conservative fallback)
 
             logger.info(
-                "ML filter applied (threshold=%.2f, features=%d)",
+                "ML filter applied (threshold=%.2f, features=%d) — "
+                "gated=%d passed=%d errors=%d",
                 threshold, len(feature_cols),
+                ml_gated, ml_passed, ml_errors,
             )
+            if ml_errors:
+                logger.warning(
+                    "ML filter had %d inference error(s) for %s/%s; "
+                    "those bars were passed through unfiltered.",
+                    ml_errors, asset, timeframe,
+                )
         except ImportError:
             logger.warning("ML filter requested but scikit-learn not available")
 
