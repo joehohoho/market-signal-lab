@@ -88,10 +88,12 @@ class RSIMeanReversionStrategy(Strategy):
             # Sell signals don't need regime filter (exit is time-sensitive)
 
         # Vectorized strength computation
-        buy_strength = ((rsi_oversold - rsi_values).abs() / rsi_oversold).clip(0.0, 1.0)
+        # Strength is HIGHEST near the threshold (strongest reversal context),
+        # lowest far from it. Invert: strength = 1 - distance_from_threshold / normalizer
+        buy_strength = (1.0 - (rsi_oversold - rsi_values).abs() / rsi_oversold).clip(0.0, 1.0)
         sell_strength_max = 100.0 - rsi_overbought
         sell_strength = (
-            ((rsi_values - rsi_overbought).abs() / sell_strength_max).clip(0.0, 1.0)
+            (1.0 - (rsi_values - rsi_overbought).abs() / sell_strength_max).clip(0.0, 1.0)
             if sell_strength_max > 0
             else pd.Series(1.0, index=df.index)
         )
