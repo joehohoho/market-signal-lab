@@ -47,7 +47,8 @@ def cagr(equity_curve: pd.Series) -> float:
 
     # Duration in years
     if isinstance(equity_curve.index, pd.DatetimeIndex):
-        days = (equity_curve.index[-1] - equity_curve.index[0]).days
+        # Use total_seconds()/86400 for fractional day support (handles sub-24h backtests)
+        days = (equity_curve.index[-1] - equity_curve.index[0]).total_seconds() / 86400
     else:
         days = len(equity_curve) - 1  # fallback: assume daily bars
 
