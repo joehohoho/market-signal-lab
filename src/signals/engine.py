@@ -102,14 +102,16 @@ class SignalEngine:
         if df is None or len(df) < 30:
             return None
 
-        # Run all strategies on higher TF
+        # Run only the active strategies (those in strategies_config) on higher TF.
+        # Iterating STRATEGY_REGISTRY would silently include out-of-run strategies,
+        # breaking reproducibility.
         buy_count = 0
         sell_count = 0
 
-        for strategy_name in STRATEGY_REGISTRY:
+        for strategy_name in strategies_config:
             try:
                 strategy = get_strategy(strategy_name)
-                tf_params = strategies_config.get(strategy_name, {}).get(higher_tf, {})
+                tf_params = strategies_config[strategy_name].get(higher_tf, {})
                 result = strategy.latest_signal(df, asset, higher_tf, tf_params)
                 if result.signal == Signal.BUY:
                     buy_count += 1
