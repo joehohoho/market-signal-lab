@@ -1078,7 +1078,7 @@ def create_app() -> FastAPI:
 
         # Format baseline result for the standard display
         baseline_equity_chart = _build_equity_chart(baseline.equity_curve)
-        baseline_equity_json = json.dumps(baseline_equity_chart)
+        json.dumps(baseline_equity_chart)
 
         formatted_trades = []
         for t in baseline.trades:

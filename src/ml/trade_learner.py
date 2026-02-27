@@ -93,7 +93,7 @@ def train_from_trades(
     prepared = df.set_index("timestamp") if "timestamp" in df.columns else df.copy()
     if not isinstance(prepared.index, pd.DatetimeIndex):
         prepared.index = pd.to_datetime(prepared.index)
-    signals = strategy.compute(prepared, asset, timeframe, params)
+    strategy.compute(prepared, asset, timeframe, params)
 
     # 3. Build features
     feat_df = build_features(df, timeframe)
