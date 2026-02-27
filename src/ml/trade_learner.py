@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -18,7 +17,7 @@ import pandas as pd
 from backtest.engine import BacktestEngine
 from ml.features import build_features
 from ml.models import MLModel
-from strategies.base import Signal, Strategy
+from strategies.base import Strategy
 
 logger = logging.getLogger(__name__)
 

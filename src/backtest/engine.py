@@ -8,7 +8,7 @@ positions with market orders filled at the next bar's open.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -25,7 +25,6 @@ from backtest.metrics import (
     win_rate,
 )
 from indicators.core import atr as compute_atr, volatility as compute_volatility
-from strategies import get_strategy
 from strategies.base import Signal, SignalResult, Strategy
 
 logger = logging.getLogger(__name__)

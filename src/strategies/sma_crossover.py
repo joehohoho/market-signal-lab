@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from indicators.core import adx as calc_adx
@@ -54,6 +53,7 @@ class SMACrossoverStrategy(Strategy):
         fast_period: int = int(p["fast_period"])
         slow_period: int = int(p["slow_period"])
         atr_period: int = int(p["atr_period"])
+        atr_filter_mult: float = float(p["atr_filter_mult"])
         regime_filter: bool = bool(p["regime_filter"])
         adx_threshold: float = float(p["adx_threshold"])
 
@@ -72,9 +72,21 @@ class SMACrossoverStrategy(Strategy):
         cross_up = fast_above & ~fast_above_prev
         cross_down = ~fast_above & fast_above_prev
 
+        # ATR volatility filter: only signal when ATR is above
+        # atr_filter_mult × its rolling mean (filters low-volatility chop).
+        # Window matches slow_period so the baseline is contextually relevant.
+        atr_rolling_mean: pd.Series = atr_values.rolling(
+            window=slow_period, min_periods=atr_period
+        ).mean()
+        atr_filter_mask: pd.Series = (
+            atr_values.notna()
+            & atr_rolling_mean.notna()
+            & (atr_values > atr_filter_mult * atr_rolling_mean)
+        )
+
         # Vectorized signal masks
-        buy_mask = cross_up & macd_hist.notna() & (macd_hist > 0)
-        sell_mask = cross_down & macd_hist.notna() & (macd_hist < 0)
+        buy_mask = cross_up & macd_hist.notna() & (macd_hist > 0) & atr_filter_mask
+        sell_mask = cross_down & macd_hist.notna() & (macd_hist < 0) & atr_filter_mask
 
         # Regime filter: only signal in trending markets
         if regime_filter:
@@ -107,6 +119,8 @@ class SMACrossoverStrategy(Strategy):
                         "slow_sma": float(slow_sma.iloc[i]) if pd.notna(slow_sma.iloc[i]) else None,
                         "macd_hist": float(macd_hist.iloc[i]) if pd.notna(macd_hist.iloc[i]) else None,
                         "atr": float(atr_values.iloc[i]) if pd.notna(atr_values.iloc[i]) else None,
+                        "atr_rolling_mean": float(atr_rolling_mean.iloc[i]) if pd.notna(atr_rolling_mean.iloc[i]) else None,
+                        "atr_filter_mult": atr_filter_mult,
                         "crossover": "bullish",
                     },
                 ))
@@ -121,6 +135,8 @@ class SMACrossoverStrategy(Strategy):
                         "slow_sma": float(slow_sma.iloc[i]) if pd.notna(slow_sma.iloc[i]) else None,
                         "macd_hist": float(macd_hist.iloc[i]) if pd.notna(macd_hist.iloc[i]) else None,
                         "atr": float(atr_values.iloc[i]) if pd.notna(atr_values.iloc[i]) else None,
+                        "atr_rolling_mean": float(atr_rolling_mean.iloc[i]) if pd.notna(atr_rolling_mean.iloc[i]) else None,
+                        "atr_filter_mult": atr_filter_mult,
                         "crossover": "bearish",
                     },
                 ))

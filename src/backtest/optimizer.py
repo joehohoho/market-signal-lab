@@ -15,7 +15,6 @@ from typing import Any
 
 import pandas as pd
 
-from app.config import get_config
 from backtest.engine import BacktestEngine
 from strategies import get_strategy
 

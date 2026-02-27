@@ -9,7 +9,6 @@ incremental ingestion fills only the missing portions of a time range.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import pandas as pd
 

@@ -28,7 +28,7 @@ from backtest.metrics import BacktestResult
 from backtest.optimizer import ParameterOptimizer
 from data.providers.yfinance_provider import YFinanceProvider
 from data.storage.parquet_store import ParquetStore
-from indicators.core import ema, sma
+from indicators.core import sma
 from paper.simulator import PaperTradingSimulator
 from screener.scanner import Screener
 from signals.engine import SignalEngine
